@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Environment
+.env
+.venv
+venv/
+ENV/
+
+# YOLO / ML
+yolov8n.pt
+runs/
+models/*.pt
+!models/potholes.pt
+
+# Project Specific
+temp_video.mp4
+assets/reports/*.png
+assets/reports/*.csv
+
+# System
+.DS_Store
+Thumbs.db
