@@ -30,6 +30,9 @@ MANIFEST
 venv/
 ENV/
 
+# Streamlit Secrets
+.streamlit/secrets.toml
+
 # YOLO / ML
 yolov8n.pt
 runs/
@@ -38,8 +41,6 @@ models/*.pt
 
 # Project Specific
 temp_video.mp4
-assets/reports/*.png
-assets/reports/*.csv
 
 # System
 .DS_Store
