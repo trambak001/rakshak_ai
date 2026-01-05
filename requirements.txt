@@ -1,9 +1,9 @@
-ultralytics
-opencv-python
 streamlit
-pygame
-pillow
+opencv-python-headless
+ultralytics
 numpy
+pandas
 geopy
+pygame
 pyttsx3
-moviepy
+pyngrok

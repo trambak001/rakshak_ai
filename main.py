@@ -2,7 +2,7 @@ import streamlit as st
 import cv2
 import numpy as np
 from src.detector import HazardDetector
-from src.utils import alert_manager
+from src.utils import alert_manager, draw_tesla_visualization
 from PIL import Image
 import time
 import pygame
@@ -288,8 +288,29 @@ with st.sidebar:
     alert_distance = st.slider("Alert Proximity (Close Range)", 1, 10, 5)
     
     st.divider()
+    st.markdown("### 🔧 Camera Calibration")
+    camera_mode = st.radio("Camera View", ["Standard (Windshield)", "Driver View (Behind Wheel)"], index=1, help="Select 'Driver View' if dashboard is visible")
+    
+    if camera_mode == "Driver View (Behind Wheel)":
+        roi_start_default = 0.35
+        dash_mask_default = 40
+    else:
+        roi_start_default = 0.60
+        dash_mask_default = 0
+        
+    dashboard_mask = st.slider("Dashboard Mask (Ignore Bottom %)", 0, 50, dash_mask_default)
+    roi_start = st.slider("Road Horizon (ROI Start %)", 0.2, 0.8, roi_start_default)
+    
+    dashboard_mask_ratio = dashboard_mask / 100.0
+    
+    st.divider()
     enable_night_mode = st.checkbox("Enable Night/Rain Vision")
-    show_debug_view = st.checkbox("Show Internal Debug View", value=True)
+    show_secondary_view = st.checkbox("Show Secondary Display", value=True)
+    if show_secondary_view:
+        debug_mode = st.selectbox("Display Mode", ["Tesla Semantic View", "Internal CV Mask"])
+    else:
+        debug_mode = "None"
+        
     auto_emergency = st.checkbox("Auto-Contact Emergency Services", value=True)
 
 # --- MAIN UI ---
@@ -387,7 +408,9 @@ with tab1:
                     # Measure detection time
                     detect_start = time.time()
                     detections, processed_frame, weather, debug_mask = st.session_state.detector.detect_hazards(
-                        frame, enhance=enable_night_mode
+                        frame, enhance=enable_night_mode, 
+                        dashboard_mask_ratio=dashboard_mask_ratio,
+                        roi_start_ratio=roi_start
                     )
                     detect_end = time.time()
                     
@@ -406,22 +429,35 @@ with tab1:
                         color = (0, 255, 0)
                         
                         if dist > alert_distance:
-                            color = (0, 0, 255)
-                            current_hazards.append(label)
+                            # LANE KEEPING LOGIC: Check if object is in our driving lane
+                            # We assume the driving lane is the center 50% of the screen
+                            frame_width = frame.shape[1]
+                            lane_left = frame_width * 0.25
+                            lane_right = frame_width * 0.75
+                            obj_center_x = (box[0] + box[2]) / 2
                             
-                            is_traffic_mode = st.session_state.simulated_speed < 25
-                            should_alert = True
-                            if is_traffic_mode and label in ['car', 'bus', 'truck']:
-                                should_alert = False
-                            if label in ['cow', 'person', 'pothole', 'water-filled pothole']:
-                                should_alert = True 
+                            is_in_path = lane_left < obj_center_x < lane_right
+                            
+                            if is_in_path:
+                                color = (0, 0, 255)
+                                current_hazards.append(label)
                                 
-                            if should_alert:
-                                # Check if it's a water-filled pothole for urgent alert
-                                is_water_filled = d.get('water_filled', False)
-                                alert_manager.trigger_hazard_alert(label, is_water_filled)
-                                icon = "💧" if is_water_filled else "🔥"
-                                st.toast(f"🚨 ALERT: {label.upper()}!", icon=icon)
+                                is_traffic_mode = st.session_state.simulated_speed < 25
+                                should_alert = True
+                                if is_traffic_mode and label in ['car', 'bus', 'truck']:
+                                    should_alert = False
+                                if label in ['cow', 'person', 'pothole', 'water-filled pothole']:
+                                    should_alert = True 
+                                    
+                                if should_alert:
+                                    # Check if it's a water-filled pothole for urgent alert
+                                    is_water_filled = d.get('water_filled', False)
+                                    alert_manager.trigger_hazard_alert(label, is_water_filled)
+                                    icon = "💧" if is_water_filled else "🔥"
+                                    st.toast(f"🚨 ALERT: {label.upper()}!", icon=icon)
+                            else:
+                                # Close but not in path - Yellow waring instead of Red
+                                color = (0, 255, 255) 
                         
                         cv2.rectangle(processed_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
                         cv2.putText(processed_frame, f"{label} (D:{dist:.1f})", (int(box[0]), int(box[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
@@ -429,8 +465,12 @@ with tab1:
                     placeholder.image(processed_frame, channels="BGR")
                     
                     # LOGIC FOR DEBUG VIEW IF VIDEO FILE MODE
-                    if show_debug_view:
-                        debug_placeholder.image(debug_mask, caption="Internal CV Mask (White = Hazard Candidate)", channels="GRAY")
+                    if show_secondary_view:
+                        if debug_mode == "Tesla Semantic View":
+                            tesla_viz = draw_tesla_visualization(detections)
+                            debug_placeholder.image(tesla_viz, caption="Tesla-style Semantic View", channels="BGR")
+                        else:
+                            debug_placeholder.image(debug_mask, caption="Internal CV Mask (White = Hazard Candidate)", channels="GRAY")
                     
                     if current_hazards:
                         st.session_state.simulated_speed = max(5, st.session_state.simulated_speed - 2)
@@ -463,7 +503,9 @@ with tab1:
                 # Measure detection time
                 detect_start = time.time()
                 detections, processed_frame, weather, debug_mask = st.session_state.detector.detect_hazards(
-                    frame, enhance=enable_night_mode
+                    frame, enhance=enable_night_mode, 
+                    dashboard_mask_ratio=dashboard_mask_ratio,
+                    roi_start_ratio=roi_start
                 )
                 detect_end = time.time()
                 
@@ -481,11 +523,21 @@ with tab1:
                     dist = d['distance_index']
                     color = (0, 255, 0)
                     if dist > alert_distance:
-                        color = (0, 0, 255)
-                        current_hazards.append(label)
-                        if label in ['cow', 'person', 'car', 'truck', 'bus', 'pothole', 'water-filled pothole']:
-                            is_water_filled = d.get('water_filled', False)
-                            alert_manager.trigger_hazard_alert(label, is_water_filled)
+                        # LANE KEEPING LOGIC
+                        frame_width = frame.shape[1]
+                        lane_left = frame_width * 0.25
+                        lane_right = frame_width * 0.75
+                        obj_center_x = (box[0] + box[2]) / 2
+                        is_in_path = lane_left < obj_center_x < lane_right
+                        
+                        if is_in_path:
+                            color = (0, 0, 255)
+                            current_hazards.append(label)
+                            if label in ['cow', 'person', 'car', 'truck', 'bus', 'pothole', 'water-filled pothole']:
+                                is_water_filled = d.get('water_filled', False)
+                                alert_manager.trigger_hazard_alert(label, is_water_filled)
+                        else:
+                             color = (0, 255, 255) # Yellow warning
                     
                     cv2.rectangle(processed_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
                     cv2.putText(processed_frame, f"{label}", (int(box[0]), int(box[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
@@ -493,8 +545,12 @@ with tab1:
                 placeholder.image(processed_frame, channels="BGR")
                 
                 # Show Debug View if enabled
-                if show_debug_view:
-                    debug_placeholder.image(debug_mask, caption="Internal CV Mask (White = Hazard Candidate)", channels="GRAY")
+                if show_secondary_view:
+                    if debug_mode == "Tesla Semantic View":
+                        tesla_viz = draw_tesla_visualization(detections)
+                        debug_placeholder.image(tesla_viz, caption="Tesla-style Semantic View", channels="BGR")
+                    else:
+                        debug_placeholder.image(debug_mask, caption="Internal CV Mask (White = Hazard Candidate)", channels="GRAY")
                     
                 if current_hazards:
                     with log_container:

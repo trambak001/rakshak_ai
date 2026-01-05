@@ -80,7 +80,11 @@ Output: Bounding box + Confidence + Label
 - **Robust**: Multiple methods compensate for each other
 - **Accurate**: 75-95% confidence with low false positives
 - **Fast**: Real-time processing at 12-20 FPS
-- **Adaptive**: Works in day, night, and rain
+- **Adaptive**: Works in day, night, rain, and *any camera angle*
+
+### Smart Features (New!):
+1. **Dynamic Driver View**: "We solved the 'dashboard problem' by implementing an adaptive ROI engine that crops the interior automatically based on camera position."
+2. **Static Object Filter**: "To prevent false alerts on AC vents or stickers, the system tracks detection history. If an object doesn't move relative to the road flow for 0.3s, it's identified as static noise and ignored."
 
 ---
 
@@ -104,7 +108,8 @@ Output: Bounding box + Confidence + Label
 
 2. **Show Settings**:
    - "Enable Night/Rain Vision" ✓
-   - "Detection Sensitivity: 0.45"
+   - "Camera View: Select 'Driver View' (if behind wheel)"
+   - "Notice how it automatically masks the dashboard"
 
 3. **Upload Video**:
    - "This is a road during monsoon season"
@@ -134,14 +139,20 @@ Output: Bounding box + Confidence + Label
 
 ---
 
-### Q2: "What about accuracy in heavy rain?"
-
+### Q2: "What about detection errors from the dashboard or AC vents?"
 **Answer**:
-> "In heavy rain, we apply two preprocessing steps: CLAHE for contrast enhancement and fastNlMeans denoising to remove rain streaks. Our accuracy in heavy rain is 70-75%, compared to 30-40% for traditional dark-spot detection. We're designed to err on the side of caution - a false warning is better than missing a dangerous pothole."
+> "That was a major challenge! We implemented a **Static Object Filter** that tracks every detection over time. Real potholes move as the car drives; AC vents don't. Our system learns this in 300ms and automatically masks out any 'hazards' that stay fixed in the frame."
 
 ---
 
-### Q3: "Why not use machine learning instead?"
+### Q3: "What about accuracy in heavy rain?"
+
+**Answer**:
+> "In heavy rain, we apply two preprocessing steps: CLAHE for contrast enhancement and **Bilateral Filtering** to remove rain streaks. Our accuracy in heavy rain is 70-75%, compared to 30-40% for traditional dark-spot detection. We're designed to err on the side of caution."
+
+---
+
+### Q4: "Why not use machine learning instead?"
 
 **Answer**:
 > "Excellent question! We do use YOLO for object detection (cars, cows, pedestrians). For potholes, we chose computer vision because:
@@ -154,14 +165,14 @@ Output: Bounding box + Confidence + Label
 
 ---
 
-### Q4: "Can this work at night?"
+### Q5: "Can this work at night?"
 
 **Answer**:
 > "Yes! We have a Night/Rain Vision mode that uses CLAHE (Contrast Limited Adaptive Histogram Equalization) to enhance visibility in low-light conditions. The water reflection method actually works better at night because headlights create strong reflections on water surfaces."
 
 ---
 
-### Q5: "How would you deploy this in a real car?"
+### Q6: "How would you deploy this in a real car?"
 
 **Answer**:
 > "We'd use an edge device like NVIDIA Jetson Nano or Raspberry Pi 4 connected to:
@@ -174,7 +185,7 @@ Output: Bounding box + Confidence + Label
 
 ---
 
-### Q6: "What's the false positive rate?"
+### Q7: "What's the false positive rate?"
 
 **Answer**:
 > "Our false positive rate is approximately 10-15%, which is intentionally conservative. We believe it's better to warn about a potential hazard that turns out to be harmless than to miss a real pothole. Users can adjust the sensitivity slider to reduce false positives if needed."
