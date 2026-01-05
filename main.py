@@ -410,12 +410,15 @@ with tab1:
                             should_alert = True
                             if is_traffic_mode and label in ['car', 'bus', 'truck']:
                                 should_alert = False
-                            if label in ['cow', 'person', 'pothole']:
+                            if label in ['cow', 'person', 'pothole', 'water-filled pothole']:
                                 should_alert = True 
                                 
                             if should_alert:
-                                alert_manager.trigger_hazard_alert(label)
-                                st.toast(f"🚨 ALERT: {label.upper()}!", icon="🔥")
+                                # Check if it's a water-filled pothole for urgent alert
+                                is_water_filled = d.get('water_filled', False)
+                                alert_manager.trigger_hazard_alert(label, is_water_filled)
+                                icon = "💧" if is_water_filled else "🔥"
+                                st.toast(f"🚨 ALERT: {label.upper()}!", icon=icon)
                         
                         cv2.rectangle(processed_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
                         cv2.putText(processed_frame, f"{label} (D:{dist:.1f})", (int(box[0]), int(box[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
@@ -473,8 +476,9 @@ with tab1:
                     if dist > alert_distance:
                         color = (0, 0, 255)
                         current_hazards.append(label)
-                        if label in ['cow', 'person', 'car', 'truck', 'bus', 'pothole']:
-                            alert_manager.trigger_hazard_alert(label)
+                        if label in ['cow', 'person', 'car', 'truck', 'bus', 'pothole', 'water-filled pothole']:
+                            is_water_filled = d.get('water_filled', False)
+                            alert_manager.trigger_hazard_alert(label, is_water_filled)
                     
                     cv2.rectangle(processed_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
                     cv2.putText(processed_frame, f"{label}", (int(box[0]), int(box[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
