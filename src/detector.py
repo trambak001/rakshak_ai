@@ -28,9 +28,11 @@ class HazardDetector:
         limg = cv2.merge((cl, a, b))
         enhanced = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
         
-        # 2. Denoising for Rain (removes some streaks)
+        # 2. Denoising for Rain
         if mode == 'rain':
-            enhanced = cv2.fastNlMeansDenoisingColored(enhanced, None, 10, 10, 7, 21)
+            # CHANGED: fastNlMeans is too slow (1-2 FPS). Used Bilateral Filter instead.
+            # Keeps edges sharp but removes noise, much faster.
+            enhanced = cv2.bilateralFilter(enhanced, 9, 75, 75)
             
         return enhanced
 
@@ -51,29 +53,17 @@ class HazardDetector:
         }
 
     def detect_water_reflections(self, frame, roi_y_start):
-        """Detects water-filled areas by analyzing reflections and brightness patterns."""
-        # Convert to HSV for better color analysis
+        """Detects water-filled areas - Returns mask AND roi for debug."""
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         height, width = frame.shape[:2]
-        
-        # Focus on road area (bottom 40%)
         roi = hsv[int(height*0.6):, :]
         roi_bgr = frame[int(height*0.6):, :]
-        
-        # Water typically reflects sky (bright) or lights (high saturation spots)
-        # Look for bright patches with low saturation (water reflecting sky)
         v_channel = roi[:, :, 2]
         s_channel = roi[:, :, 1]
         
-        # Detect bright areas (potential water reflections)
         _, bright_mask = cv2.threshold(v_channel, 150, 255, cv2.THRESH_BINARY)
-        
-        # Detect low saturation (water is often grayish/bluish)
         _, low_sat_mask = cv2.threshold(s_channel, 60, 255, cv2.THRESH_BINARY_INV)
-        
-        # Combine: bright + low saturation = potential water
         water_mask = cv2.bitwise_and(bright_mask, low_sat_mask)
-        
         return water_mask, roi_bgr
     
     def detect_edge_gradients(self, roi_gray):
@@ -112,32 +102,33 @@ class HazardDetector:
         return smooth_mask
 
     def detect_road_hazards(self, frame):
-        """Advanced pothole detection including water-filled potholes in rain."""
+        """Advanced pothole detection with debug output."""
         height, width = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         roi_gray = gray[int(height*0.6):, :]
         
-        # Method 1: Traditional dark spot detection (dry potholes)
-        _, dark_thresh = cv2.threshold(roi_gray, 50, 255, cv2.THRESH_BINARY_INV)
+        # - Method 1: Adaptive Dark Spot
+        dark_thresh = cv2.adaptiveThreshold(
+            roi_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY_INV, 51, 15
+        )
+        kernel_clean = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        dark_thresh = cv2.erode(dark_thresh, kernel_clean, iterations=1)
         
-        # Method 2: Water reflection detection (water-filled potholes)
-        water_mask, roi_bgr = self.detect_water_reflections(frame, int(height*0.6))
-        
-        # Method 3: Edge gradient analysis
+        # - Method 2, 3, 4
+        water_mask, _ = self.detect_water_reflections(frame, int(height*0.6))
         edge_mask = self.detect_edge_gradients(roi_gray)
-        
-        # Method 4: Texture anomaly detection
         texture_mask = self.detect_texture_anomalies(roi_gray)
         
-        # Combine all methods with weighted approach
-        # Dark spots OR (water reflections AND texture anomalies)
-        combined_mask = cv2.bitwise_or(dark_thresh, 
-                                       cv2.bitwise_and(water_mask, texture_mask))
+        # - Combination
+        water_pothole_candidate = cv2.bitwise_and(water_mask, texture_mask)
+        water_pothole_candidate = cv2.bitwise_and(water_pothole_candidate, edge_mask)
+        combined_mask = cv2.bitwise_or(dark_thresh, water_pothole_candidate)
         
-        # Apply morphological operations to clean up
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
+        # - Morphology
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel, iterations=2)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_DILATE, kernel, iterations=1)
         
         # Find contours
         contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -145,43 +136,59 @@ class HazardDetector:
         road_hazards = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if 500 < area < 8000:  # Increased upper limit for water-filled potholes
+            
+            if 600 < area < 4000:
                 x, y, w, h = cv2.boundingRect(cnt)
                 
-                # Calculate aspect ratio (potholes are roughly circular)
-                aspect_ratio = float(w) / h if h > 0 else 0
+                # Filter 1: Aspect Ratio
+                aspect_ratio = float(w) / h
+                if aspect_ratio < 0.5 or aspect_ratio > 2.0: continue
                 
-                # Filter based on shape (0.5 to 2.0 for reasonable potholes)
-                if 0.4 < aspect_ratio < 2.5:
-                    # Adjust coordinates back to original frame
-                    real_y = y + int(height*0.6)
-                    
-                    # Calculate confidence based on multiple factors
-                    roi_section = roi_gray[y:y+h, x:x+w]
-                    avg_intensity = np.mean(roi_section)
-                    
-                    # Check if it's in water mask (higher confidence for water-filled)
-                    water_section = water_mask[y:y+h, x:x+w]
-                    water_percentage = np.sum(water_section > 0) / (w * h) if (w * h) > 0 else 0
-                    
-                    # Determine type and confidence
-                    if water_percentage > 0.3:
-                        label = 'water-filled pothole'
-                        confidence = min(0.75 + water_percentage * 0.2, 0.95)
-                    else:
-                        label = 'pothole/drainage'
-                        confidence = 0.65
-                    
-                    road_hazards.append({
-                        'label': label,
-                        'confidence': confidence,
-                        'box': [x, real_y, x+w, real_y+h],
-                        'area': area,
-                        'distance_index': 1000 / (h + 1),
-                        'water_filled': water_percentage > 0.3
-                    })
+                # Filter 2: Solidity
+                hull = cv2.convexHull(cnt)
+                hull_area = cv2.contourArea(hull)
+                solidity = float(area) / hull_area if hull_area > 0 else 0
+                if solidity < 0.7: continue
+                
+                # Filter 3: REFLECTOR / HEADLIGHT FILTER (New)
+                # Dividers/Reflectors are: Small, Compact, EXTREMELY Bright
+                roi_section = roi_gray[y:y+h, x:x+w]
+                avg_intensity = np.mean(roi_section)
+                max_intensity = np.max(roi_section)
+                
+                # If area is small-ish and it's practically glowing white -> Reflector
+                if area < 1000 and max_intensity > 240:
+                    continue 
+
+                # Filter 4: Lane Markings
+                water_section = water_mask[y:y+h, x:x+w]
+                water_percentage = np.sum(water_section > 0) / (w * h) if (w * h) > 0 else 0
+                is_water_filled = water_percentage > 0.4
+                
+                if avg_intensity > 160 and not is_water_filled:
+                    continue 
+                
+                # --- Valid Detection ---
+                real_y = y + int(height*0.6)
+                
+                if is_water_filled:
+                    label = 'water-filled pothole'
+                    confidence = min(0.80 + water_percentage * 0.15, 0.98)
+                else:
+                    label = 'pothole/drainage'
+                    confidence = 0.60 + (solidity * 0.2)
+                
+                road_hazards.append({
+                    'label': label,
+                    'confidence': confidence,
+                    'box': [x, real_y, x+w, real_y+h],
+                    'area': area,
+                    'distance_index': 1000 / (h + 1),
+                    'water_filled': is_water_filled
+                })
         
-        return road_hazards
+        # Return hazardous items AND the debug mask for UI
+        return road_hazards, combined_mask
 
     def detect_hazards(self, frame, enhance=False):
         weather = self.analyze_weather(frame)
@@ -211,11 +218,12 @@ class HazardDetector:
                     'distance_index': 1000 / (height + 1)
                 })
         
-        # 2. Add Road Condition Analysis (Potholes/Drainage)
-        road_hazards = self.detect_road_hazards(frame)
+        # 2. Add Road Condition Analysis
+        # Now unpacks both hazards and the debug mask
+        road_hazards, debug_mask = self.detect_road_hazards(frame)
         detections.extend(road_hazards)
             
-        return detections, frame, weather
+        return detections, frame, weather, debug_mask
 
     def check_accident(self, detections):
         """Simulates accident detection based on proximity and overlap."""

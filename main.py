@@ -289,6 +289,7 @@ with st.sidebar:
     
     st.divider()
     enable_night_mode = st.checkbox("Enable Night/Rain Vision")
+    show_debug_view = st.checkbox("Show Internal Debug View", value=True)
     auto_emergency = st.checkbox("Auto-Contact Emergency Services", value=True)
 
 # --- MAIN UI ---
@@ -347,6 +348,8 @@ with tab1:
     with col1:
         st.markdown('<div class="section-header">🛰️ System Feed</div>', unsafe_allow_html=True)
         placeholder = st.empty()
+        # Placeholder for Debug View
+        debug_placeholder = st.empty()
     
     if detection_mode == "Video File":
         uploaded_file = st.file_uploader("Upload Road Video", type=["mp4", "avi", "mov"])
@@ -383,7 +386,7 @@ with tab1:
                     
                     # Measure detection time
                     detect_start = time.time()
-                    detections, processed_frame, weather = st.session_state.detector.detect_hazards(
+                    detections, processed_frame, weather, debug_mask = st.session_state.detector.detect_hazards(
                         frame, enhance=enable_night_mode
                     )
                     detect_end = time.time()
@@ -425,6 +428,10 @@ with tab1:
 
                     placeholder.image(processed_frame, channels="BGR")
                     
+                    # LOGIC FOR DEBUG VIEW IF VIDEO FILE MODE
+                    if show_debug_view:
+                        debug_placeholder.image(debug_mask, caption="Internal CV Mask (White = Hazard Candidate)", channels="GRAY")
+                    
                     if current_hazards:
                         st.session_state.simulated_speed = max(5, st.session_state.simulated_speed - 2)
                     else:
@@ -455,7 +462,7 @@ with tab1:
                 
                 # Measure detection time
                 detect_start = time.time()
-                detections, processed_frame, weather = st.session_state.detector.detect_hazards(
+                detections, processed_frame, weather, debug_mask = st.session_state.detector.detect_hazards(
                     frame, enhance=enable_night_mode
                 )
                 detect_end = time.time()
@@ -484,6 +491,11 @@ with tab1:
                     cv2.putText(processed_frame, f"{label}", (int(box[0]), int(box[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
                 placeholder.image(processed_frame, channels="BGR")
+                
+                # Show Debug View if enabled
+                if show_debug_view:
+                    debug_placeholder.image(debug_mask, caption="Internal CV Mask (White = Hazard Candidate)", channels="GRAY")
+                    
                 if current_hazards:
                     with log_container:
                         st.write(f"[{time.strftime('%H:%M:%S')}] Detected: {', '.join(set(current_hazards))}")
