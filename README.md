@@ -14,6 +14,9 @@ Rakshak AI is a state-of-the-art driver assistance system specifically engineere
     - **Morphological Filtering**: Eliminates false positives with intelligent shape-based filtering
     - **Differentiated Alerts**: More urgent warnings for water-filled potholes (75-95% confidence)
 *   **Pothole & Drainage Detection**: Innovative computer vision fallback to identify hazardous road irregularities, even those obscured by rainwater.
+*   **Lane-Level Localization**: Advanced geometric logic to classify hazards into specific lanes (Left, Center, Right) for precise navigation warnings.
+*   **Time-to-Collision (TTC) Engine**: Calculates 'Seconds to Impact' based on relative visual velocity, prioritizing imminent threats.
+*   **Intelligent Pothole Grading**: Classifies road damage into **Level 1 (Minor)**, **Level 2 (Moderate)**, and **Level 3 (Critical/Water-Filled)** using depth and texture analysis.
 *   **Night & Rain Vision**: Integrated CLAHE image enhancement for superior visibility in adverse weather and low-light conditions.
 *   **Proximity Alert System**: Dynamic distance estimation with audio-visual "Siren" alerts and voice feedback.
 *   **Emergency Response System**: Automated accident detection logic with simulated GPS-based emergency service contact.

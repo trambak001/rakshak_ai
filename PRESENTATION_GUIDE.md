@@ -6,10 +6,12 @@ This guide helps you explain the project during your college viva or presentatio
 "Good morning, everyone. Today, I'm presenting **Rakshak AI**, an AI-powered safety system designed for Indian road conditions. Standard cars today have safety systems designed for Western highways, but they fail in India when a cow suddenly crosses the road, or when there's a deep pothole filled with rain water. Our project solves this."
 
 ## 2. Technical Strategy (How it works)
-"We use a Deep Learning model called **YOLO (You Only Look Once)**. It can see objects in real-time, just like a human eye but faster. 
-- We've trained/configured it to recognize standard hazards: Cows, Dogs, Pedestrians, and Cars.
-- Since potholes are hard to see at night or in rain, we've added a **Digital Image Enhancement** layer that brightens up low-light scenes.
-- We also developed a custom **Computer Vision Fallback** to detect dark depressions on the road, which likely represent potholes or open drains."
+"We use a Deep Learning model called **YOLO (You Only Look Once)**. It can see objects in real-time. But detection alone isn't enough. We've added **Contextual Intelligence**:
+
+- **Lane-Level Localization**: Unlike basic detectors, Rakshak AI places hazards in specific lanes (Left/Center/Right), helping the driver know *where* to steer.
+- **Time-to-Collision (TTC)**: We calculate the 'Seconds to Impact' for every object, prioritizing alerts for immediate threats.
+- **Digital Enhancement**: For night/rain, we use CLAHE to brighten the scene before detection.
+- **Pothole Fallback**: A custom CV algorithm specifically for Indian roads to find open drains and water-filled potholes."
 
 ## 3. Key Innovation: Alert & Emergency
 "The system doesn't just 'see'; it 'acts'. 
@@ -36,6 +38,14 @@ This guide helps you explain the project during your college viva or presentatio
     
 - **Q: What makes water-filled potholes more dangerous?**
   - *Answer*: Water hides the depth - what looks like a small puddle could be a deep pothole that damages suspension, causes loss of control, or even leads to accidents. Our system specifically warns drivers to slow down when it detects water-filled hazards.
+
+- **Q: How does it differentiate between a small crack and a dangerous crater?**
+  - *Answer*: We implemented a **Severity Grading Logic (Levels 1-3)**:
+    - **Level 1 (Minor)**: Small surface cracks (Yellow alert).
+    - **Level 2 (Moderate)**: Deeper potholes that need caution (Orange alert).
+    - **Level 3 (Critical)**: Deep craters or **Water-Filled** pits that can cause accidents (Red Alert + Voice Warning).
+    
+    This ensures the driver isn't annoyed by constant beeps for minor road issues.
 
 - **Q: How accurate is this detection?**
   - *Answer*: Our multi-method approach achieves 75-95% confidence for water-filled potholes. The system is designed to err on the side of caution - a false warning is better than missing a dangerous pothole.

@@ -425,34 +425,57 @@ with tab1:
                     for d in detections:
                         label = d['label']
                         box = d['box']
-                        dist = d['distance_index']
-                        color = (0, 255, 0)
+                        # Use new fields
+                        lane = d.get('lane', 'Unknown')
+                        dist_m = d.get('distance_m', 0)
+                        ttc = d.get('ttc', 99.9)
+                        severity = d.get('severity', 0)
+                        pothole_level = d.get('pothole_level', 0)
                         
-                        if dist > alert_distance:
-                            # LANE KEEPING LOGIC: Check if object is in our driving lane
-                            # We assume the driving lane is the center 50% of the screen
-                            frame_width = frame.shape[1]
-                            lane_left = frame_width * 0.25
-                            lane_right = frame_width * 0.75
-                            obj_center_x = (box[0] + box[2]) / 2
+                        # Dynamic Color Logic
+                        if pothole_level > 0:
+                            # Specific Pothole Coloring
+                            if pothole_level == 3: color = (0, 0, 255)       # Red - Critical
+                            elif pothole_level == 2: color = (0, 165, 255)   # Orange - Moderate
+                            else: color = (0, 255, 255)                      # Yellow - Minor
+                        elif severity >= 8:
+                            color = (0, 0, 255)
+                        elif severity >= 4:
+                            color = (0, 165, 255)
+                        else:
+                            color = (0, 255, 0)
                             
-                            is_in_path = lane_left < obj_center_x < lane_right
+                        # Trigger Alert
+                        # Critical Potholes (L3) or High Severity Hazards
+                        if severity >= 7 or pothole_level == 3:
+                            current_hazards.append(f"{label} ({lane})")
                             
-                            if is_in_path:
-                                color = (0, 0, 255)
-                                current_hazards.append(label)
-                                
-                                is_traffic_mode = st.session_state.simulated_speed < 25
-                                should_alert = True
-                                if is_traffic_mode and label in ['car', 'bus', 'truck']:
-                                    should_alert = False
-                                if label in ['cow', 'person', 'pothole', 'water-filled pothole']:
-                                    should_alert = True 
-                                    
-                                if should_alert:
-                                    # Check if it's a water-filled pothole for urgent alert
-                                    is_water_filled = d.get('water_filled', False)
-                                    alert_manager.trigger_hazard_alert(label, is_water_filled)
+                            should_alert = True
+                            # Traffic filter
+                            is_traffic_mode = st.session_state.simulated_speed < 25
+                            if is_traffic_mode and label in ['car', 'bus', 'truck']:
+                                should_alert = False
+                            
+                            if should_alert:
+                                is_water_filled = d.get('water_filled', False)
+                                alert_manager.trigger_hazard_alert(label)
+
+                        # Draw Box
+                        cv2.rectangle(processed_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
+                        
+                        # Rich Label Display
+                        if pothole_level > 0:
+                             # Pothole Format: "Pothole L3 | CRITICAL"
+                             desc = d.get('pothole_desc', '')
+                             display_text = f"{label} | {desc}"
+                             sub_text = f"{dist_m}m | {lane}"
+                        else:
+                             # Object Format: "Car | Center | 12m"
+                             display_text = f"{label} | {lane}"
+                             sub_text = f"{dist_m}m | TTC: {ttc}s"
+                        
+                        cv2.putText(processed_frame, display_text, (int(box[0]), int(box[1]-20)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                        cv2.putText(processed_frame, sub_text, (int(box[0]), int(box[1]-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
                                     icon = "💧" if is_water_filled else "🔥"
                                     st.toast(f"🚨 ALERT: {label.upper()}!", icon=icon)
                             else:
@@ -520,27 +543,50 @@ with tab1:
                 for d in detections:
                     label = d['label']
                     box = d['box']
-                    dist = d['distance_index']
-                    color = (0, 255, 0)
-                    if dist > alert_distance:
-                        # LANE KEEPING LOGIC
-                        frame_width = frame.shape[1]
-                        lane_left = frame_width * 0.25
-                        lane_right = frame_width * 0.75
-                        obj_center_x = (box[0] + box[2]) / 2
-                        is_in_path = lane_left < obj_center_x < lane_right
-                        
-                        if is_in_path:
-                            color = (0, 0, 255)
-                            current_hazards.append(label)
-                            if label in ['cow', 'person', 'car', 'truck', 'bus', 'pothole', 'water-filled pothole']:
-                                is_water_filled = d.get('water_filled', False)
-                                alert_manager.trigger_hazard_alert(label, is_water_filled)
-                        else:
-                             color = (0, 255, 255) # Yellow warning
                     
+                    # Use new fields
+                    lane = d.get('lane', 'Unknown')
+                    dist_m = d.get('distance_m', 0)
+                    ttc = d.get('ttc', 99.9)
+                    severity = d.get('severity', 0)
+                    pothole_level = d.get('pothole_level', 0)
+                    
+                    # Dynamic Color Logic
+                    if pothole_level > 0:
+                        # Specific Pothole Coloring
+                        if pothole_level == 3: color = (0, 0, 255)       # Red - Critical
+                        elif pothole_level == 2: color = (0, 165, 255)   # Orange - Moderate
+                        else: color = (0, 255, 255)                      # Yellow - Minor
+                    elif severity >= 8:
+                        color = (0, 0, 255)
+                    elif severity >= 4:
+                        color = (0, 165, 255)
+                    else:
+                        color = (0, 255, 0)
+                    
+                    # Trigger Alert Logic
+                    if severity >= 7 or pothole_level == 3:
+                        current_hazards.append(f"{label} ({lane})")
+                        if label in ['cow', 'person', 'car', 'truck', 'bus', 'pothole', 'water-filled pothole', 'Pothole L1', 'Pothole L2', 'Pothole L3']:
+                            is_water_filled = d.get('water_filled', False)
+                            alert_manager.trigger_hazard_alert(label, is_water_filled)
+                    
+                    # Draw Box
                     cv2.rectangle(processed_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
-                    cv2.putText(processed_frame, f"{label}", (int(box[0]), int(box[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                    
+                    # Rich Label
+                    if pothole_level > 0:
+                            # Pothole Format: "Pothole L3 | CRITICAL"
+                            desc = d.get('pothole_desc', '')
+                            display_text = f"{label} | {desc}"
+                            sub_text = f"{dist_m}m | {lane}"
+                    else:
+                            # Object Format: "Car | Center | 12m"
+                            display_text = f"{label} | {lane}"
+                            sub_text = f"{dist_m}m | TTC: {ttc}s"
+                    
+                    cv2.putText(processed_frame, display_text, (int(box[0]), int(box[1]-20)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                    cv2.putText(processed_frame, sub_text, (int(box[0]), int(box[1]-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
                 placeholder.image(processed_frame, channels="BGR")
                 

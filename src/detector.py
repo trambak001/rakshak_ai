@@ -269,14 +269,44 @@ class HazardDetector:
                 is_water_filled = water_percentage > 0.4
                 if avg_intensity > 160 and not is_water_filled: continue 
                 
-                # --- Valid Detection ---
-                real_y = y + y_start
+                # --- POTHOLE LEVEL & SEVERITY LOGIC ---
+                # Calculate Severity Score (0-10) based on multiple factors
+                
+                # 1. Size Factor (0-4 points)
+                # Bigger = More dangerous
+                size_score = min(4, area / 800)
+                
+                # 2. Depth Factor (Darkness) (0-3 points)
+                # Darker = Deeper. Avg intensity is 0(black) to 255(white).
+                # We want lower intensity to give higher score.
+                depth_score = 0
+                if avg_intensity < 50: depth_score = 3     # Very Deep
+                elif avg_intensity < 90: depth_score = 2   # Moderate
+                elif avg_intensity < 130: depth_score = 1  # Shallow
+                
+                # 3. Water Factor (Critical Multiplier)
+                # Water hides depth, making it inherently dangerous (Level 3 potential)
+                water_bonus = 3 if is_water_filled else 0
+                
+                total_severity = size_score + depth_score + water_bonus
+                
+                # Assign Levels
+                if total_severity >= 5.5 or is_water_filled:
+                    level = 3
+                    desc = "CRITICAL"
+                elif total_severity >= 3.0:
+                    level = 2
+                    desc = "MODERATE"
+                else:
+                    level = 1
+                    desc = "MINOR"
+                
+                label = f"Pothole L{level}"
                 
                 if is_water_filled:
-                    label = 'water-filled pothole'
+                    label = f"Water Pit L{level}"
                     confidence = min(0.80 + water_percentage * 0.15, 0.98)
                 else:
-                    label = 'pothole/drainage'
                     confidence = 0.60 + (solidity * 0.2)
                 
                 # --- STATIC OBJECT FILTERING LOGIC ---
@@ -320,7 +350,9 @@ class HazardDetector:
                     'box': [x, real_y, x+w, real_y+h],
                     'area': area,
                     'distance_index': 1000 / (h + 1),
-                    'water_filled': is_water_filled
+                    'water_filled': is_water_filled,
+                    'pothole_level': level,
+                    'pothole_desc': desc
                 })
         
         # Debug Mask
@@ -366,6 +398,8 @@ class HazardDetector:
                     'distance_index': 1000 / (height + 1)
                 })
         
+                })
+        
         # FIX: Merge trucks into trains if aligned
         detections = self.merge_train_cars(detections)
         
@@ -376,7 +410,74 @@ class HazardDetector:
             roi_start_ratio=roi_start_ratio
         )
         detections.extend(road_hazards)
+        
+        # 3. Post-Process: Lane & TTC Analysis
+        # Assume a standard camera FOV and resolution
+        height, width = frame.shape[:2]
+        
+        for d in detections:
+            # --- Lane Determination ---
+            # Box format: [x1, y1, x2, y2]
+            box = d['box']
+            center_x = (box[0] + box[2]) / 2
             
+            # Simple Perspective Divider:
+            # We assume the road converges towards the center top.
+            # 0.0 - 0.33: Left Lane
+            # 0.33 - 0.66: Center Lane
+            # 0.66 - 1.0: Right Lane
+            # Ideally this should be trapezoidal, but linear is a robust baseline.
+            
+            norm_x = center_x / width
+            
+            if norm_x < 0.30:
+                d['lane'] = 'Left Shoulder'
+                d['lane_id'] = 0
+            elif 0.30 <= norm_x < 0.45:
+                d['lane'] = 'Left Lane'
+                d['lane_id'] = 1
+            elif 0.45 <= norm_x < 0.55:
+                # Tight center for vehicles directly ahead
+                d['lane'] = 'Center Lane'
+                d['lane_id'] = 2
+            elif 0.55 <= norm_x < 0.70:
+                d['lane'] = 'Right Lane'
+                d['lane_id'] = 3
+            else:
+                d['lane'] = 'Right Shoulder'
+                d['lane_id'] = 4
+                
+            # --- Time to Collision (TTC) ---
+            # Distance index is ~ 1000 / height. 
+            # Height acts as proxy for distance (bigger = closer).
+            # Let's map normalized height to rough meters.
+            # H_img / H_obj ~ f / dist
+            # dist ~ C / H_img
+            
+            # Assume Avg Car Height = 1.5m
+            # d['distance_index'] is already 1000 / height
+            # Let's say at 10m away, a car is 100px high in 720p. 
+            # dist_idx = 10 -> 10 meters.
+            
+            estimated_dist_m = d['distance_index'] * 1.5 # Tuning factor
+            d['distance_m'] = round(estimated_dist_m, 1)
+            
+            # Simulate relative speed (approach rate)
+            # In a real system we'd track d(dist)/dt
+            # Here we assume a closing speed based on distance (closer objects appear to move faster)
+            closing_speed_mps = 16.6 # ~60 km/h approx relative
+            
+            ttc = estimated_dist_m / closing_speed_mps
+            d['ttc'] = round(ttc, 2)
+            
+            # Add uniqueness: Hazard Severity Score
+            severity = 0
+            if d['lane_id'] == 2: severity += 5 # In our lane
+            if d['ttc'] < 2.0: severity += 4 # Imminent collision
+            if d['label'] in ['person', 'cow']: severity += 3 # Vulnerable road user
+            
+            d['severity'] = min(10, severity)
+
         return detections, frame, weather, debug_mask
 
     def check_accident(self, detections):
