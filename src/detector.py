@@ -479,13 +479,27 @@ class HazardDetector:
         return detections, frame, weather, debug_mask
 
     def check_accident(self, detections):
-        """Simulates accident detection based on proximity and overlap."""
-        # Simple logic: if two vehicles have high overlap and are large (close)
-        # Or if we find a 'car' that is rotated (hard with standard YOLO)
-        # For now, let's just return False unless we see a collision pattern
-        vehicles = [d for d in detections if d['label'] in ['car', 'truck', 'bus']]
+        """Simulates accident detection based on proximity and high overlap."""
+        vehicles = [d for d in detections if d['label'].lower() in ['car', 'truck', 'bus', 'train']]
         if len(vehicles) >= 2:
-            # Check overlap
-            # This is a simplified placeholder for accident detection logic
-            pass
+            for i in range(len(vehicles)):
+                for j in range(i + 1, len(vehicles)):
+                    v1, v2 = vehicles[i], vehicles[j]
+                    b1, b2 = v1['box'], v2['box']
+                    
+                    # Calculate IOU
+                    xA = max(b1[0], b2[0])
+                    yA = max(b1[1], b2[1])
+                    xB = min(b1[2], b2[2])
+                    yB = min(b1[3], b2[3])
+                    
+                    interArea = max(0, xB - xA) * max(0, yB - yA)
+                    v1_area = (b1[2]-b1[0]) * (b1[3]-b1[1])
+                    v2_area = (b2[2]-b2[0]) * (b2[3]-b2[1])
+                    
+                    iou = interArea / float(v1_area + v2_area - interArea) if (v1_area + v2_area - interArea) > 0 else 0
+                    
+                    # If two close vehicles overlap significantly, it's a potential crash
+                    if iou > 0.45 and v1['distance_index'] > 5:
+                        return True
         return False

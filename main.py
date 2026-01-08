@@ -28,8 +28,8 @@ st.markdown("""
         font-family: 'Architects Daughter', cursive;
     }
 
-    /* Prevent custom font from breaking Streamlit Icons */
-    [data-testid="stIcon"], .main-svg, .lucide {
+    /* CRITICAL FIX: Prevent custom font from breaking Streamlit & Material Icons */
+    [data-testid="stIcon"], .main-svg, .lucide, i, svg, .material-icons, [class*="st-emotion-cache-"] {
         font-family: inherit !important;
     }
 
@@ -111,6 +111,7 @@ st.markdown("""
         background-color: #fff !important;
         color: #333 !important;
         width: 100% !important;
+        font-family: 'Architects Daughter', cursive !important;
     }
     
     .stButton > button:hover {
@@ -269,7 +270,11 @@ st.markdown("""
 # --- INITIALIZATION ---
 if 'detector' not in st.session_state:
     st.session_state.detector = HazardDetector()
-    pygame.mixer.init()
+    if not pygame.mixer.get_init():
+        try:
+            pygame.mixer.init()
+        except:
+            pass
 
 if 'stop_detection' not in st.session_state:
     st.session_state.stop_detection = False
@@ -491,6 +496,15 @@ with tab1:
                         cv2.putText(processed_frame, display_text, (int(box[0]), int(box[1]-20)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                         cv2.putText(processed_frame, sub_text, (int(box[0]), int(box[1]-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
+                    # --- Emergency logic ---
+                    acc_detected = st.session_state.detector.check_accident(detections)
+                    if acc_detected:
+                        status_card.error("⚠️ ACCIDENT DETECTED! Emergency Response Active.")
+                        if auto_emergency:
+                             alert_manager.contact_emergency(19.076, 72.877) # Mumbai mock
+                    else:
+                        status_card.success("SYSTEM READY: Monitor Active")
+
                     placeholder.image(processed_frame, channels="BGR")
                     
                     # LOGIC FOR DEBUG VIEW IF VIDEO FILE MODE
@@ -594,6 +608,15 @@ with tab1:
                     
                     cv2.putText(processed_frame, display_text, (int(box[0]), int(box[1]-20)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                     cv2.putText(processed_frame, sub_text, (int(box[0]), int(box[1]-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+
+                # --- Emergency logic ---
+                acc_detected = st.session_state.detector.check_accident(detections)
+                if acc_detected:
+                    status_card.error("⚠️ ACCIDENT DETECTED! Emergency Response Active.")
+                    if auto_emergency:
+                         alert_manager.contact_emergency(19.076, 72.877) # Mumbai mock
+                else:
+                    status_card.success("SYSTEM READY: Monitor Active")
 
                 placeholder.image(processed_frame, channels="BGR")
                 
