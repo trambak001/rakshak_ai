@@ -28,6 +28,11 @@ st.markdown("""
         font-family: 'Architects Daughter', cursive;
     }
 
+    /* Prevent custom font from breaking Streamlit Icons */
+    [data-testid="stIcon"], .main-svg, .lucide {
+        font-family: inherit !important;
+    }
+
     .stMainBlockContainer {
         padding-top: 1rem !important;
         padding-bottom: 7rem !important;
@@ -38,7 +43,14 @@ st.markdown("""
         background-color: #ffffff !important;
         border-right: 10px double #333 !important;
     }
-    [data-testid="stSidebar"] * {
+    
+    /* Target only text elements in sidebar to avoid breaking icons */
+    [data-testid="stSidebar"] span, 
+    [data-testid="stSidebar"] label, 
+    [data-testid="stSidebar"] p, 
+    [data-testid="stSidebar"] h1, 
+    [data-testid="stSidebar"] h2, 
+    [data-testid="stSidebar"] h3 {
         color: #333 !important;
         font-family: 'Architects Daughter', cursive !important;
     }
