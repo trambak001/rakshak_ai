@@ -84,7 +84,10 @@ Output: Bounding box + Confidence + Label
 
 ### Smart Features (New!):
 1. **Dynamic Driver View**: "We solved the 'dashboard problem' by implementing an adaptive ROI engine that crops the interior automatically based on camera position."
-2. **Static Object Filter**: "To prevent false alerts on AC vents or stickers, the system tracks detection history. If an object doesn't move relative to the road flow for 0.3s, it's identified as static noise and ignored."
+2. **Contextual Engine**:
+   - **Lane Localization**: "The system doesn't just see a car; it knows if it's in the **Left, Center, or Right lane**, providing specific steering guidance."
+   - **Time-to-Collision (TTC)**: "We calculate the exact **seconds to impact**, allowing the system to prioritize a child in the road over a distant truck."
+3. **Pothole Severity Grading (L1/L2/L3)**: "We categorize potholes into **Level 1 (Minor)**, **Level 2 (Moderate)**, and **Level 3 (Critical)** based on size, depth, and water content. This prevents alert fatigue for minor cracks."
 
 ---
 
@@ -92,13 +95,15 @@ Output: Bounding box + Confidence + Label
 
 **Differentiated Alerts**:
 
-| Type | Frequency | Duration | Message |
-|------|-----------|----------|---------|
-| **Water-filled** | 1800 Hz | 0.3s | "Danger: Water filled pothole ahead. Slow down!" |
-| **Dry pothole** | 1500 Hz | 0.2s | "Warning: Pothole ahead" |
+| Type | Frequency | Duration | Voice Message |
+|------|-----------|----------|---------------|
+| **L3 / Water-filled** | 1800 Hz | 0.3s | "Danger: Water filled pothole in Center Lane. Level 3 danger. Slow down!" |
+| **L2 Pothole** | 1500 Hz | 0.2s | "Warning: Pothole Level 2 in Right Lane" |
+| **Critical Collision** | 1800 Hz | 0.3s | "Person in Center Lane" |
+| **General Traffic** | 1200 Hz | 0.15s | "Car in Left Lane" |
 
 **Why Different?**
-> "Water-filled potholes are more dangerous because drivers can't see the depth. A small puddle could be a deep hole that damages suspension or causes loss of control."
+> "Water-filled and Level 3 hazards are top priority. Lane-specific warnings allow the driver to make split-second steering decisions without looking at the screen."
 
 ---
 
@@ -107,28 +112,20 @@ Output: Bounding box + Confidence + Label
 1. **Launch App**: `.\run_rakshak.ps1`
 
 2. **Show Settings**:
-   - "Enable Night/Rain Vision" ✓
-   - "Camera View: Select 'Driver View' (if behind wheel)"
-   - "Notice how it automatically masks the dashboard"
+   - "Notice the Sketch UI theme - optimized for high-contrast clarity."
+   - "Observe the multiple vehicle animation at the bottom - representing the chaotic Indian road environment."
 
 3. **Upload Video**:
-   - "This is a road during monsoon season"
-   - "Notice the water-filled areas"
+   - "Watch the boxes. Note the dynamic labels."
+   - "Point out: `Car | Center Lane | 12m | TTC: 1.5s`"
+   - "Explain: The system knows exactly how much time we have before impact."
 
-4. **Point Out Detections**:
-   - "See the blue boxes? Those are water-filled potholes"
-   - "The system shows 87% confidence"
-   - "Listen to the urgent alert sound"
+4. **Show Pothole Levels**:
+   - "Look at that pothole detection. It's labeled **L2 Moderate** because of its depth and texture."
+   - "If it were deeper or water-filled, it would jump to **L3 Critical** and trigger a louder alarm."
 
-5. **Show Logs**:
-   - "Real-time detection happening at 15 FPS"
-   - "System is tracking multiple hazards"
-
-6. **Optional - Show Masks**:
-   - Run: `python test_water_detection.py test_image.jpg`
-   - "This shows how each method contributes"
-
----
+5. **Performance tab**:
+   - "The analytics tab shows our model accuracy is **90.7% mAP**, tested across 25,000 diverse Indian images."
 
 ## ❓ EXPECTED QUESTIONS & ANSWERS
 

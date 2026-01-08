@@ -447,6 +447,7 @@ with tab1:
                             
                         # Trigger Alert
                         # Critical Potholes (L3) or High Severity Hazards
+                        is_water_filled = d.get('water_filled', False)
                         if severity >= 7 or pothole_level == 3:
                             current_hazards.append(f"{label} ({lane})")
                             
@@ -457,8 +458,9 @@ with tab1:
                                 should_alert = False
                             
                             if should_alert:
-                                is_water_filled = d.get('water_filled', False)
-                                alert_manager.trigger_hazard_alert(label)
+                                alert_manager.trigger_hazard_alert(label, is_water_filled, lane)
+                                icon = "💧" if is_water_filled else "🔥"
+                                st.toast(f"🚨 ALERT: {label.upper()}!", icon=icon)
 
                         # Draw Box
                         cv2.rectangle(processed_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
@@ -476,14 +478,6 @@ with tab1:
                         
                         cv2.putText(processed_frame, display_text, (int(box[0]), int(box[1]-20)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                         cv2.putText(processed_frame, sub_text, (int(box[0]), int(box[1]-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-                                    icon = "💧" if is_water_filled else "🔥"
-                                    st.toast(f"🚨 ALERT: {label.upper()}!", icon=icon)
-                            else:
-                                # Close but not in path - Yellow waring instead of Red
-                                color = (0, 255, 255) 
-                        
-                        cv2.rectangle(processed_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
-                        cv2.putText(processed_frame, f"{label} (D:{dist:.1f})", (int(box[0]), int(box[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
                     placeholder.image(processed_frame, channels="BGR")
                     
@@ -565,11 +559,12 @@ with tab1:
                         color = (0, 255, 0)
                     
                     # Trigger Alert Logic
+                    is_water_filled = d.get('water_filled', False)
                     if severity >= 7 or pothole_level == 3:
                         current_hazards.append(f"{label} ({lane})")
-                        if label in ['cow', 'person', 'car', 'truck', 'bus', 'pothole', 'water-filled pothole', 'Pothole L1', 'Pothole L2', 'Pothole L3']:
-                            is_water_filled = d.get('water_filled', False)
-                            alert_manager.trigger_hazard_alert(label, is_water_filled)
+                        alert_manager.trigger_hazard_alert(label, is_water_filled, lane)
+                        icon = "💧" if is_water_filled else "🔥"
+                        st.toast(f"🚨 ALERT: {label.upper()}!", icon=icon)
                     
                     # Draw Box
                     cv2.rectangle(processed_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)

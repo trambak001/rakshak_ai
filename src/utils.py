@@ -65,15 +65,22 @@ class AlertManager:
                 self.is_speaking = False
             threading.Thread(target=run, daemon=True).start()
 
-    def trigger_hazard_alert(self, hazard_type, is_water_filled=False):
-        """Combination of beep and voice."""
+    def trigger_hazard_alert(self, hazard_type, is_water_filled=False, lane=""):
+        """Combination of beep and voice with lane/level details."""
         if is_water_filled or 'water' in hazard_type.lower():
             # More urgent alert for water-filled potholes
             self.play_beep(frequency=1800, duration=0.3)
-            self.speak(f"Danger: Water filled pothole ahead. Slow down!")
-        else:
+            voice_text = f"Danger: Water filled pothole in {lane or 'your path'}. Level 3 danger. Slow down!"
+            self.speak(voice_text)
+        elif 'pothole' in hazard_type.lower():
             self.play_beep(frequency=1500, duration=0.2)
-            self.speak(f"Warning: {hazard_type} ahead")
+            voice_text = f"Warning: {hazard_type} in {lane or 'road'}."
+            self.speak(voice_text)
+        else:
+            self.play_beep(frequency=1200, duration=0.15)
+            # Shortened labels for voice e.g. "Car Center Lane"
+            lane_info = f" in {lane}" if lane else ""
+            self.speak(f"{hazard_type}{lane_info}")
 
     def track_accident(self, detections, lat=19.0760, lon=72.8777):
         """Simulates accident detection and emergency contact."""

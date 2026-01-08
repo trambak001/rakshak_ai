@@ -398,8 +398,6 @@ class HazardDetector:
                     'distance_index': 1000 / (height + 1)
                 })
         
-                })
-        
         # FIX: Merge trucks into trains if aligned
         detections = self.merge_train_cars(detections)
         
