@@ -4,9 +4,19 @@ from ultralytics import YOLO
 import time
 
 class HazardDetector:
-    def __init__(self, model_path='yolov8n.pt'):
+    def __init__(self, model_path='yolov8s.pt'):
         self.model = YOLO(model_path)
-        # Class names for standard YOLOv8
+        self.process_width = 640 # Optimization: Downscale for faster processing
+        # Global Standard Dimensions (Meters)
+        self.standards = {
+            'car': {'height': 1.5, 'width': 1.8},
+            'truck': {'height': 3.5, 'width': 2.5},
+            'bus': {'height': 3.2, 'width': 2.5},
+            'person': {'height': 1.7, 'width': 0.6},
+            'motorcycle': {'height': 1.2, 'width': 0.8},
+            'pothole': {'height': 0.1, 'width': 0.5},
+            'speed_breaker': {'height': 0.1, 'width': 3.0}
+        }
         self.target_classes = {
             'person': 0,
             'bicycle': 1,
@@ -233,6 +243,22 @@ class HazardDetector:
         combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel, iterations=2)
         combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_DILATE, kernel, iterations=1)
         
+        # --- FIXED: PERSPECTIVE MASK (No Potholes in Sky/Buildings/Dividers) ---
+        # Force the detection to be within a STRICT road-shaped trapezoid
+        h_mask, w_mask = combined_mask.shape
+        road_perspective_mask = np.zeros_like(combined_mask)
+        # Trapezoid points: Narrower to exclude dividers/service lanes
+        poly_pts = np.array([[
+            (int(w_mask * 0.10), h_mask),    # Bottom Left (Cut 10% side)
+            (int(w_mask * 0.35), 0),         # Top Left (Focus on center horizon)
+            (int(w_mask * 0.65), 0),         # Top Right
+            (int(w_mask * 0.90), h_mask)     # Bottom Right (Cut 10% side)
+        ]], np.int32)
+        cv2.fillPoly(road_perspective_mask, [poly_pts], 255)
+        
+        # Apply the mask: Everything outside the trapezoid becomes 0
+        combined_mask = cv2.bitwise_and(combined_mask, road_perspective_mask)
+        
         # Find contours
         contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
@@ -240,24 +266,25 @@ class HazardDetector:
         for cnt in contours:
             area = cv2.contourArea(cnt)
             
-            if 600 < area < 4000:
+            if 300 < area < 8000: # Relaxed area constraints
                 x, y, w, h = cv2.boundingRect(cnt)
+                real_y = y + y_start # Absolute Y coordinate
                 
                 # Filter 1: Aspect Ratio
                 aspect_ratio = float(w) / h
-                if aspect_ratio < 0.5 or aspect_ratio > 2.5: continue
+                if aspect_ratio < 0.3 or aspect_ratio > 4.0: continue # Relaxed aspect ratio
                 
-                # Filter 2: Solidity
+                # Filter 2: Solidity (Relaxed for irregular potholes)
                 hull = cv2.convexHull(cnt)
                 hull_area = cv2.contourArea(hull)
                 solidity = float(area) / hull_area if hull_area > 0 else 0
-                if solidity < 0.7: continue
+                if solidity < 0.5: continue
                 
-                # Filter 3: Glare/Reflector
                 roi_section = roi_gray[y:y+h, x:x+w]
                 avg_intensity = np.mean(roi_section)
                 max_intensity = np.max(roi_section)
-                if area < 1500 and max_intensity > 220: continue 
+                # Allow higher intensity for wet roads (glare is common)
+                if area < 1000 and max_intensity > 240: continue 
 
                 # Filter 4: Bottom Edge (Dashboard bleed)
                 # Stricter: ignore if touches bottom 5 pixels
@@ -266,8 +293,10 @@ class HazardDetector:
                 # Filter 5: Lane Markings
                 water_section = water_mask[y:y+h, x:x+w]
                 water_percentage = np.sum(water_section > 0) / (w * h) if (w * h) > 0 else 0
-                is_water_filled = water_percentage > 0.4
-                if avg_intensity > 160 and not is_water_filled: continue 
+                is_water_filled = water_percentage > 0.3 # Lower threshold for "water-filled"
+                
+                # Only filter out bright things if they are NOT water
+                if avg_intensity > 180 and not is_water_filled: continue 
                 
                 # --- POTHOLE LEVEL & SEVERITY LOGIC ---
                 # Calculate Severity Score (0-10) based on multiple factors
@@ -286,12 +315,12 @@ class HazardDetector:
                 
                 # 3. Water Factor (Critical Multiplier)
                 # Water hides depth, making it inherently dangerous (Level 3 potential)
-                water_bonus = 3 if is_water_filled else 0
+                water_bonus = 5 if is_water_filled else 0
                 
                 total_severity = size_score + depth_score + water_bonus
                 
                 # Assign Levels
-                if total_severity >= 5.5 or is_water_filled:
+                if total_severity >= 5.0 or is_water_filled:
                     level = 3
                     desc = "CRITICAL"
                 elif total_severity >= 3.0:
@@ -301,7 +330,14 @@ class HazardDetector:
                     level = 1
                     desc = "MINOR"
                 
-                label = f"Pothole L{level}"
+                # --- SPEED BREAKER HEURISTIC ---
+                # Speed breakers are typically very wide (> 3x height)
+                if aspect_ratio > 3.0 and area > 1200:
+                    label = "Speed Breaker"
+                    level = 1 # Usually minor unless at high speed
+                    desc = "BUMP"
+                else:
+                    label = f"Pothole L{level}"
                 
                 if is_water_filled:
                     label = f"Water Pit L{level}"
@@ -363,116 +399,245 @@ class HazardDetector:
             
         return road_hazards, full_debug_mask
 
+    def detect_active_lanes(self, frame):
+        """
+        Detects lane lines to dynamically determine the drive path.
+        Returns (left_boundary_x, right_boundary_x) at the bottom of the frame relative to 640px width.
+        """
+        height, width = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Contrast enhancement for better line visualization
+        gray = cv2.equalizeHist(gray)
+        
+        # Edge Detection
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blur, 50, 150)
+        
+        # ROI Mask (Trapezoid focusing on road)
+        mask = np.zeros_like(edges)
+        polygon = np.array([[
+            (0, height),
+            (int(width * 0.3), int(height * 0.6)), # Horizon
+            (int(width * 0.7), int(height * 0.6)),
+            (width, height)
+        ]], np.int32)
+        cv2.fillPoly(mask, [polygon], 255)
+        masked_edges = cv2.bitwise_and(edges, mask)
+        
+        # Hough Lines
+        lines = cv2.HoughLinesP(masked_edges, 1, np.pi/180, 50, minLineLength=40, maxLineGap=100)
+        
+        if lines is None:
+            return None, None # Fallback
+            
+        left_lines = []
+        right_lines = []
+        
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            if x2 == x1: continue # Vertical
+            slope = (y2 - y1) / (x2 - x1)
+            
+            # Filter by slope (expecting diagonals)
+            if slope < -0.4: # Left lane (negative slope)
+                left_lines.append(line[0])
+            elif slope > 0.4: # Right lane (positive slope)
+                right_lines.append(line[0])
+                
+        # Calculate Average X intercept at bottom (y=height)
+        def get_bottom_x(line_group):
+            if not line_group: return None
+            x_coords = []
+            weights = []
+            for l in line_group:
+                x1, y1, x2, y2 = l
+                length = np.sqrt((x2-x1)**2 + (y2-y1)**2)
+                slope = (y2 - y1) / (x2 - x1)
+                intercept = y1 - slope * x1
+                # x = (y - b) / m
+                bottom_x = (height - intercept) / slope
+                x_coords.append(bottom_x)
+                weights.append(length) # Longer lines have more weight
+            return np.average(x_coords, weights=weights)
+            
+        left_x = get_bottom_x(left_lines)
+        right_x = get_bottom_x(right_lines)
+        
+        return left_x, right_x
+
     def detect_hazards(self, frame, enhance=False, dashboard_mask_ratio=0.0, roi_start_ratio=0.6):
-        weather = self.analyze_weather(frame)
+        orig_h, orig_w = frame.shape[:2]
+        
+        # Optimization: Process at lower resolution
+        scale = self.process_width / orig_w
+        proc_frame = cv2.resize(frame, (self.process_width, int(orig_h * scale)))
+        
+        weather = self.analyze_weather(proc_frame)
         
         if enhance:
             mode = 'night' if weather['is_night'] else 'rain'
-            frame = self.preprocess_environment(frame, mode=mode)
+            proc_frame = self.preprocess_environment(proc_frame, mode=mode)
             
-        results = self.model(frame, verbose=False)[0]
+        results = self.model(proc_frame, verbose=False)[0]
         
         detections = []
         # 1. Standard AI Detections (YOLO)
         for box in results.boxes:
             cls = int(box.cls[0])
             conf = float(box.conf[0])
-            xyxy = box.xyxy[0].tolist()
+            # Scale boxes back to original size
+            xyxy = (box.xyxy[0] / scale).tolist()
             label = self.model.names[cls]
             
-            # YOLO Filter: Reject things in Dashboard Zone
-            # Using same logic as CV: ignore if center of box is below our ROI end
+            # YOLO Filter: Reject things in Dashboard Zone OR Far Sides (Divider/Service Lane)
             box_cy = (xyxy[1] + xyxy[3]) / 2
-            roi_limit = frame.shape[0] * (1.0 - dashboard_mask_ratio)
+            box_cx = (xyxy[0] + xyxy[2]) / 2
+            roi_limit = orig_h * (1.0 - dashboard_mask_ratio)
             
-            if box_cy > roi_limit:
-                continue 
+            # 1. Dashboard Check
+            if box_cy > roi_limit: continue 
+            # 2. Divider/Side Check (Ignore far 10% on edges)
+            if box_cx < (orig_w * 0.10) or box_cx > (orig_w * 0.90): continue
             
-            if label in ['person', 'car', 'bus', 'truck', 'train', 'cow', 'motorcycle']:
-                height = xyxy[3] - xyxy[1]
+            if label in ['person', 'car', 'bus', 'truck', 'train', 'cow', 'motorcycle', 'bicycle', 'dog']:
+                h = xyxy[3] - xyxy[1]
+                w = xyxy[2] - xyxy[0]
+                
+                # Accuracy: filter small noise
+                if h < 20 or w < 20: continue
+                
+                # Distance calculation using global standards
+                obj_std_h = self.standards.get(label, self.standards['car'])['height']
+                # focal_length_simulated: assuming 700px focal length for HD
+                dist_m = (obj_std_h * 700) / (h + 1)
+                
                 detections.append({
                     'label': label,
                     'confidence': conf,
                     'box': xyxy,
-                    'area': (xyxy[2]-xyxy[0]) * height,
-                    'distance_index': 1000 / (height + 1)
+                    'area': w * h,
+                    'distance_m': round(dist_m, 1),
+                    'distance_index': 1000 / (h + 1)
                 })
         
-        # FIX: Merge trucks into trains if aligned
         detections = self.merge_train_cars(detections)
         
-        # 2. Add Road Condition Analysis
-        road_hazards, debug_mask = self.detect_road_hazards(
-            frame, 
+        # 2. Add Road Condition Analysis (on proc_frame for speed)
+        road_hazards, debug_mask_small = self.detect_road_hazards(
+            proc_frame, 
             dashboard_mask_ratio=dashboard_mask_ratio,
             roi_start_ratio=roi_start_ratio
         )
-        detections.extend(road_hazards)
         
-        # 3. Post-Process: Lane & TTC Analysis
-        # Assume a standard camera FOV and resolution
-        height, width = frame.shape[:2]
+        # Scale road hazards back to original
+        for rh in road_hazards:
+            box = rh['box']
+            rh['box'] = [b / scale for b in box]
+            detections.append(rh)
         
+        # Scale debug mask back
+        debug_mask = cv2.resize(debug_mask_small, (orig_w, orig_h))
+        
+        # --- DYNAMIC LANE ANALYSIS ---
+        # 1. Detect lanes on the small frame
+        l_x, r_x = self.detect_active_lanes(proc_frame)
+        
+        # 2. Scale up to original resolution
+        # Default Logic (Fallback): 30% | 40% | 30% split
+        lane_left_x = orig_w * 0.35
+        lane_right_x = orig_w * 0.65
+        dynamic_lanes_found = False
+        
+        if l_x is not None or r_x is not None:
+            # If we only found one line, infer the other based on standard lane width (~50% of screen at bottom?)
+            # Heuristic: Lane width usually ~40-50% of screen width at bottom
+            inferred_width = orig_w * 0.45
+            
+            # Scale up detected points
+            cur_lx = l_x / scale if l_x is not None else None
+            cur_rx = r_x / scale if r_x is not None else None
+            
+            if cur_lx is not None and cur_rx is not None:
+                # Found both!
+                lane_left_x = cur_lx
+                lane_right_x = cur_rx
+                dynamic_lanes_found = True
+            elif cur_lx is not None:
+                # Found Left only
+                lane_left_x = cur_lx
+                lane_right_x = cur_lx + inferred_width
+            elif cur_rx is not None:
+                # Found Right only
+                lane_right_x = cur_rx
+                lane_left_x = cur_rx - inferred_width
+                
+            # Sanity Limits: Don't let lanes cross or go off screen
+            lane_left_x = max(0, min(lane_left_x, orig_w * 0.45))
+            lane_right_x = min(orig_w, max(lane_right_x, orig_w * 0.55))
+
+        # 3. Post-Process: Dynamic Lane Classification
         for d in detections:
-            # --- Lane Determination ---
-            # Box format: [x1, y1, x2, y2]
             box = d['box']
             center_x = (box[0] + box[2]) / 2
+            # norm_x = center_x / orig_w # Legacy
             
-            # Simple Perspective Divider:
-            # We assume the road converges towards the center top.
-            # 0.0 - 0.33: Left Lane
-            # 0.33 - 0.66: Center Lane
-            # 0.66 - 1.0: Right Lane
-            # Ideally this should be trapezoidal, but linear is a robust baseline.
+            # Dynamic Lane Assignment
+            # < Left_Line : Left Lane
+            # Left_Line < x < Right_Line : Center (Ego) Lane
+            # > Right_Line : Right Lane
             
-            norm_x = center_x / width
+            # Additional 'Shoulder' buffers (15% of width)
+            shoulder_buffer = orig_w * 0.15
             
-            if norm_x < 0.30:
+            if center_x < (lane_left_x - shoulder_buffer):
                 d['lane'] = 'Left Shoulder'
                 d['lane_id'] = 0
-            elif 0.30 <= norm_x < 0.45:
+            elif center_x < lane_left_x:
                 d['lane'] = 'Left Lane'
                 d['lane_id'] = 1
-            elif 0.45 <= norm_x < 0.55:
-                # Tight center for vehicles directly ahead
-                d['lane'] = 'Center Lane'
+            elif center_x < lane_right_x:
+                d['lane'] = 'Ego Lane' # DRIVING PATH
                 d['lane_id'] = 2
-            elif 0.55 <= norm_x < 0.70:
+            elif center_x < (lane_right_x + shoulder_buffer):
                 d['lane'] = 'Right Lane'
                 d['lane_id'] = 3
             else:
                 d['lane'] = 'Right Shoulder'
                 d['lane_id'] = 4
-                
-            # --- Time to Collision (TTC) ---
-            # Distance index is ~ 1000 / height. 
-            # Height acts as proxy for distance (bigger = closer).
-            # Let's map normalized height to rough meters.
-            # H_img / H_obj ~ f / dist
-            # dist ~ C / H_img
             
-            # Assume Avg Car Height = 1.5m
-            # d['distance_index'] is already 1000 / height
-            # Let's say at 10m away, a car is 100px high in 720p. 
-            # dist_idx = 10 -> 10 meters.
+            # Unified Distance & TTC
+            dist_m = d.get('distance_m')
+            if dist_m is None:
+                dist_m = 1000 / ((box[3]-box[1]) + 1) * 0.5 
+                d['distance_m'] = round(dist_m, 1)
             
-            estimated_dist_m = d['distance_index'] * 1.5 # Tuning factor
-            d['distance_m'] = round(estimated_dist_m, 1)
+            closing_speed = 15.0 
+            d['ttc'] = round(dist_m / closing_speed, 2)
             
-            # Simulate relative speed (approach rate)
-            # In a real system we'd track d(dist)/dt
-            # Here we assume a closing speed based on distance (closer objects appear to move faster)
-            closing_speed_mps = 16.6 # ~60 km/h approx relative
-            
-            ttc = estimated_dist_m / closing_speed_mps
-            d['ttc'] = round(ttc, 2)
-            
-            # Add uniqueness: Hazard Severity Score
+            # --- INTELLIGENT SEVERITY LOGIC ---
             severity = 0
-            if d['lane_id'] == 2: severity += 5 # In our lane
-            if d['ttc'] < 2.0: severity += 4 # Imminent collision
-            if d['label'] in ['person', 'cow']: severity += 3 # Vulnerable road user
+            
+            # Path Logic:
+            if d['lane_id'] == 2: # DIRECTLY IN PATH
+                severity = 6
+                if d['ttc'] < 2.5: severity += 4 # CRITICAL (10)
+            elif d['lane_id'] in [1, 3]: # ADJACENT LANES
+                severity = 3
+                # If very close and moving laterally (heuristic), bump it
+                if d['ttc'] < 1.0: severity += 2 # Warning (5)
+            else: # SHOULDERS
+                severity = 1 # Observation only
+                
+            # Vulnerable Road User Logic
+            # People/Animals are critical if they are anywhere near the road (lanes 1,2,3)
+            # But NOT if they are safe on the shoulder
+            is_living = d['label'] in ['person', 'cow', 'dog', 'bicycle']
+            if is_living:
+                if d['lane_id'] in [1, 2, 3]: # On the road
+                    severity = max(severity, 7) # Automatic High Alert
+                elif d['lane_id'] in [0, 4]: # On shoulder
+                    severity = 2 # Safe but monitor
             
             d['severity'] = min(10, severity)
 

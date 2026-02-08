@@ -465,19 +465,31 @@ with tab1:
                         # Trigger Alert
                         # Critical Potholes (L3) or High Severity Hazards
                         is_water_filled = d.get('water_filled', False)
+                        
+                        # Only alert for High Severity (>=7) or Critical Potholes
+                        should_alert = False
                         if severity >= 7 or pothole_level == 3:
-                            current_hazards.append(f"{label} ({lane})")
-                            
                             should_alert = True
+                            
                             # Traffic filter
                             is_traffic_mode = st.session_state.simulated_speed < 25
                             if is_traffic_mode and label in ['car', 'bus', 'truck']:
                                 should_alert = False
                             
+                            # Cooldown Logic
+                            current_time = time.time()
+                            last_alert = st.session_state.get('last_alert_time', {})
+                            if current_time - last_alert.get(label, 0) < 3.0: # 3 second cooldown per class
+                                should_alert = False
+                            
                             if should_alert:
                                 alert_manager.trigger_hazard_alert(label, is_water_filled, lane)
                                 icon = "💧" if is_water_filled else "🔥"
-                                st.toast(f"🚨 ALERT: {label.upper()}!", icon=icon)
+                                st.toast(f"🚨 ALERT: {label.upper()} in {lane}!", icon=icon)
+                                
+                                # Update cooldown
+                                last_alert[label] = current_time
+                                st.session_state['last_alert_time'] = last_alert
 
                         # Draw Box
                         cv2.rectangle(processed_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
