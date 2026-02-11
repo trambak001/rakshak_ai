@@ -19,7 +19,7 @@ Rakshak AI is a state-of-the-art driver assistance system specifically engineere
 *   **Intelligent Pothole Grading**: Classifies road damage into **Level 1 (Minor)**, **Level 2 (Moderate)**, and **Level 3 (Critical/Water-Filled)** using depth and texture analysis.
 *   **Night & Rain Vision**: Integrated CLAHE image enhancement for superior visibility in adverse weather and low-light conditions.
 *   **Proximity Alert System**: Dynamic distance estimation with audio-visual "Siren" alerts and voice feedback.
-*   **Emergency Response System**: Automated accident detection logic with simulated GPS-based emergency service contact.
+
 *   **Dual Mode Feed**: Support for both live USB Camera monitoring and pre-recorded Video File analysis.
 
 ## 🛠️ Technology Stack

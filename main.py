@@ -2,7 +2,7 @@ import streamlit as st
 import cv2
 import numpy as np
 from src.detector import HazardDetector
-from src.utils import alert_manager, draw_tesla_visualization
+from src.utils import alert_manager
 from PIL import Image
 import time
 import pygame
@@ -322,13 +322,10 @@ with st.sidebar:
     
     st.divider()
     enable_night_mode = st.checkbox("Enable Night/Rain Vision")
-    show_secondary_view = st.checkbox("Show Secondary Display", value=True)
-    if show_secondary_view:
-        debug_mode = st.selectbox("Display Mode", ["Tesla Semantic View", "Internal CV Mask"])
-    else:
-        debug_mode = "None"
+    show_secondary_view = st.checkbox("Show Debug Mask View", value=False)
+    debug_mode = "Internal CV Mask" if show_secondary_view else "None"
         
-    auto_emergency = st.checkbox("Auto-Contact Emergency Services", value=True)
+
 
 # --- MAIN UI ---
 if 'weather_status' not in st.session_state:
@@ -366,9 +363,7 @@ with tab1:
         st.markdown('<div class="section-header">📋 Real-time Logs</div>', unsafe_allow_html=True)
         log_container = st.container(height=500)
         
-        st.markdown('<div class="section-header">🚑 Emergency Status</div>', unsafe_allow_html=True)
-        status_card = st.empty()
-        status_card.success("SYSTEM READY: Monitor Active")
+        # Real-time Performance Metrics
 
         # Dynamic Performance Metrics
         m1, m2 = st.columns(2)
@@ -508,24 +503,13 @@ with tab1:
                         cv2.putText(processed_frame, display_text, (int(box[0]), int(box[1]-20)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                         cv2.putText(processed_frame, sub_text, (int(box[0]), int(box[1]-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
-                    # --- Emergency logic ---
-                    acc_detected = st.session_state.detector.check_accident(detections)
-                    if acc_detected:
-                        status_card.error("⚠️ ACCIDENT DETECTED! Emergency Response Active.")
-                        if auto_emergency:
-                             alert_manager.contact_emergency(19.076, 72.877) # Mumbai mock
-                    else:
-                        status_card.success("SYSTEM READY: Monitor Active")
+
 
                     placeholder.image(processed_frame, channels="BGR")
                     
-                    # LOGIC FOR DEBUG VIEW IF VIDEO FILE MODE
+                    # Debug mask view
                     if show_secondary_view:
-                        if debug_mode == "Tesla Semantic View":
-                            tesla_viz = draw_tesla_visualization(detections)
-                            debug_placeholder.image(tesla_viz, caption="Tesla-style Semantic View", channels="BGR")
-                        else:
-                            debug_placeholder.image(debug_mask, caption="Internal CV Mask (White = Hazard Candidate)", channels="GRAY")
+                        debug_placeholder.image(debug_mask, caption="Detection Mask (White = Hazard Candidate)", channels="GRAY")
                     
                     if current_hazards:
                         st.session_state.simulated_speed = max(5, st.session_state.simulated_speed - 2)
@@ -621,24 +605,13 @@ with tab1:
                     cv2.putText(processed_frame, display_text, (int(box[0]), int(box[1]-20)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                     cv2.putText(processed_frame, sub_text, (int(box[0]), int(box[1]-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
-                # --- Emergency logic ---
-                acc_detected = st.session_state.detector.check_accident(detections)
-                if acc_detected:
-                    status_card.error("⚠️ ACCIDENT DETECTED! Emergency Response Active.")
-                    if auto_emergency:
-                         alert_manager.contact_emergency(19.076, 72.877) # Mumbai mock
-                else:
-                    status_card.success("SYSTEM READY: Monitor Active")
+
 
                 placeholder.image(processed_frame, channels="BGR")
                 
-                # Show Debug View if enabled
+                # Debug mask view
                 if show_secondary_view:
-                    if debug_mode == "Tesla Semantic View":
-                        tesla_viz = draw_tesla_visualization(detections)
-                        debug_placeholder.image(tesla_viz, caption="Tesla-style Semantic View", channels="BGR")
-                    else:
-                        debug_placeholder.image(debug_mask, caption="Internal CV Mask (White = Hazard Candidate)", channels="GRAY")
+                    debug_placeholder.image(debug_mask, caption="Detection Mask (White = Hazard Candidate)", channels="GRAY")
                     
                 if current_hazards:
                     with log_container:
