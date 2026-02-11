@@ -1,0 +1,40 @@
+# Rakshak AI - Custom Training Dataset Configuration
+# For YOLOv8/v11 Training
+
+# Dataset paths (relative to this file)
+path: ../data/processed  # Root directory
+train: images/train      # Train images
+val: images/val          # Validation images
+test: images/test        # Test images
+
+# Number of classes
+nc: 10
+
+# Class names (Indian road hazard detection)
+names:
+  0: pothole             # Regular pothole (dry)
+  1: water-pothole       # Water-filled pothole (high priority)
+  2: car                 # Standard car
+  3: truck               # Truck/heavy vehicle
+  4: bus                 # Bus
+  5: auto-rickshaw       # Auto-rickshaw (Indian specific)
+  6: person              # Pedestrian
+  7: cow                 # Cow/cattle (Indian specific)
+  8: drainage            # Open drainage/manhole
+  9: crack               # Road crack
+
+# Training hyperparameters (can be overridden in train script)
+# These are optimized for Indian road conditions
+augmentation:
+  hsv_h: 0.015           # HSV-Hue augmentation (0.0-1.0)
+  hsv_s: 0.7             # HSV-Saturation augmentation (0.0-1.0)
+  hsv_v: 0.4             # HSV-Value augmentation (0.0-1.0)
+  degrees: 10            # Rotation ±10 degrees
+  translate: 0.1         # Translation ±10%
+  scale: 0.5             # Scaling factor (0.5 = 50% to 150%)
+  shear: 5.0             # Shear ±5 degrees
+  perspective: 0.0       # Perspective transformation
+  flipud: 0.0            # Flip upside-down probability
+  fliplr: 0.5            # Flip left-right probability (50%)
+  mosaic: 1.0            # Mosaic augmentation probability
+  mixup: 0.1             # MixUp augmentation probability

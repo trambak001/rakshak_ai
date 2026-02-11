@@ -2,9 +2,23 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 import time
+import os
 
 class HazardDetector:
-    def __init__(self, model_path='yolov8s.pt'):
+    def __init__(self, model_path=None):
+        # Auto-detect best available model
+        if model_path is None:
+            # Try custom-trained model first
+            if os.path.exists('models/rakshak_best.pt'):
+                model_path = 'models/rakshak_best.pt'
+                print("✅ Using custom-trained model: models/rakshak_best.pt")
+            elif os.path.exists('yolov8s.pt'):
+                model_path = 'yolov8s.pt'
+                print("⚠️ Using pre-trained model. Train custom model for better accuracy!")
+            else:
+                model_path = 'yolov8n.pt'
+                print("⚠️ Downloading YOLOv8 nano model...")
+        
         self.model = YOLO(model_path)
         self.process_width = 640 # Optimization: Downscale for faster processing
         # Global Standard Dimensions (Meters)

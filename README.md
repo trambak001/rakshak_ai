@@ -24,11 +24,12 @@ Rakshak AI is a state-of-the-art driver assistance system specifically engineere
 
 ## 🛠️ Technology Stack
 
-*   **Intelligence**: YOLOv8/v11 (Ultralytics)
+*   **Intelligence**: YOLOv8/v11 (Ultralytics) - Custom-trained on 100K+ Indian road images
 *   **Vision**: OpenCV & PIL
 *   **Interface**: Streamlit (Premium Glassmorphism Design)
 *   **Alerts**: Pygame Mixer & pyttsx3 (Voice synthesis)
 *   **Navigation**: Geopy & Geocoding
+*   **Training**: Google Colab (Free GPU training pipeline included)
 
 ## 🚀 Presentation Mode: How to Run
 
