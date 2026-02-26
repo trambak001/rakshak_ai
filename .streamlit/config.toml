@@ -1,6 +1,9 @@
 [theme]
-primaryColor="#e74c3c"
-backgroundColor="#ffffff"
-secondaryBackgroundColor="#f8f9fa"
-textColor="#2c3e50"
+primaryColor="#00d4ff"
+backgroundColor="#0a0e1a"
+secondaryBackgroundColor="#111827"
+textColor="#e2e8f0"
 font="sans serif"
+
+[server]
+headless = true

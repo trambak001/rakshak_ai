@@ -669,7 +669,9 @@ class HazardDetector:
             
             d['severity'] = min(10, severity)
 
-        return detections, frame, weather, debug_mask
+        # Scale proc_frame back to original resolution so boxes drawn externally match
+        output_frame = cv2.resize(proc_frame, (orig_w, orig_h))
+        return detections, output_frame, weather, debug_mask
 
     def check_accident(self, detections):
         """Simulates accident detection based on proximity and high overlap."""
