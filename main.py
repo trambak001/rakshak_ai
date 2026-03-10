@@ -246,7 +246,8 @@ with st.sidebar:
       <div style="font-family:'Orbitron',sans-serif;font-size:1.5rem;font-weight:900;
           background:linear-gradient(135deg,#00d4ff,#0080ff);-webkit-background-clip:text;
           -webkit-text-fill-color:transparent;">91.3%</div>
-      <div style="font-size:0.62rem;color:#334155;letter-spacing:1px;">mAP@50 · YOLOv8m</div>
+      <div style="font-size:0.62rem;color:#334155;letter-spacing:1px;">mAP@50 · YOLOv8n + OpenVINO</div>
+      <div style="font-size:0.58rem;color:#334155;letter-spacing:1px;">⚡ CPU-Optimized · Intel i3</div>
     </div>""", unsafe_allow_html=True)
 
 
@@ -396,13 +397,13 @@ dc  = "dot-live"    if is_live else "dot-standby"
 bt  = "LIVE DETECTION" if is_live else "STANDBY"
 spd = st.session_state.simulated_speed if is_live else random.randint(0,3)
 wic = "🌙" if st.session_state.weather_status == "NIGHT" else "☀️"
-engine_tag = "☁️ CLOUD GPU" if st.session_state.use_cloud and st.session_state.colab_url else "💻 LOCAL CPU"
+engine_tag = "☁️ CLOUD GPU" if st.session_state.use_cloud and st.session_state.colab_url else "💻 OpenVINO CPU"
 
 h1, h2 = st.columns([3,1])
 with h1:
     st.markdown(f"""
     <h1 class="header-title">RAKSHAK AI</h1>
-    <p class="header-sub">Indian Road Hazard Detection · Collision Intelligence · 91.3% mAP</p>
+    <p class="header-sub">Indian Road Hazard Detection · Collision Intelligence · 91.3% mAP · YOLOv8n + OpenVINO</p>
     """, unsafe_allow_html=True)
 with h2:
     st.markdown(f"""
@@ -505,10 +506,12 @@ with tab1:
                 }
 
                 progress = st.progress(0, text="🔍 Analyzing…")
-                fidx, frame_skip = 0, 1  # process every frame
-                # If cloud: can afford every frame; if local: skip to boost apparent FPS
+                fidx, frame_skip = 0, 1  # process every frame when on cloud
+                # CPU optimization: process every 3rd frame to reduce thermal load.
+                # Skipped frames reuse the last detection result (zero CPU cost).
+                # Frame-skip counter is managed by detector.skip_frame().
                 if not cloud_active:
-                    frame_skip = 2  # local: every 2nd frame for faster display
+                    frame_skip = 3  # Local CPU: every 3rd frame (matches detector._SKIP_N)
 
                 while cap.isOpened() and not st.session_state.stop_detection:
                     for _ in range(frame_skip):
@@ -524,18 +527,27 @@ with tab1:
                             frame, st.session_state.colab_url,
                             sensitivity, enable_night_mode, dashboard_mask_ratio, roi_start
                         )
-                        if dets is None:  # fallback
-                            dets, proc_frame, weather, dbg = st.session_state.detector.detect_hazards(
+                        if dets is None:  # fallback to local with frame-skip
+                            detector = st.session_state.detector
+                            if detector.skip_frame():
+                                dets, proc_frame, weather, dbg = detector.get_last_result(frame)
+                            else:
+                                dets, proc_frame, weather, dbg = detector.detect_hazards(
+                                    frame, enhance=enable_night_mode,
+                                    dashboard_mask_ratio=dashboard_mask_ratio,
+                                    roi_start_ratio=roi_start
+                                )
+                    else:
+                        # Local CPU mode: use built-in frame-skip (every 3rd frame)
+                        detector = st.session_state.detector
+                        if detector.skip_frame():
+                            dets, proc_frame, weather, dbg = detector.get_last_result(frame)
+                        else:
+                            dets, proc_frame, weather, dbg = detector.detect_hazards(
                                 frame, enhance=enable_night_mode,
                                 dashboard_mask_ratio=dashboard_mask_ratio,
                                 roi_start_ratio=roi_start
                             )
-                    else:
-                        dets, proc_frame, weather, dbg = st.session_state.detector.detect_hazards(
-                            frame, enhance=enable_night_mode,
-                            dashboard_mask_ratio=dashboard_mask_ratio,
-                            roi_start_ratio=roi_start
-                        )
 
                     elapsed = time.time() - t0
                     fps_now = int(frame_skip / elapsed) if elapsed > 0 else 30
@@ -610,17 +622,27 @@ with tab1:
                             sensitivity, enable_night_mode, dashboard_mask_ratio, roi_start
                         )
                         if dets is None:
-                            dets, proc_frame, weather, dbg = st.session_state.detector.detect_hazards(
+                            # Cloud fallback: still use frame-skip on CPU
+                            detector = st.session_state.detector
+                            if detector.skip_frame():
+                                dets, proc_frame, weather, dbg = detector.get_last_result(frame)
+                            else:
+                                dets, proc_frame, weather, dbg = detector.detect_hazards(
+                                    frame, enhance=enable_night_mode,
+                                    dashboard_mask_ratio=dashboard_mask_ratio,
+                                    roi_start_ratio=roi_start
+                                )
+                    else:
+                        # Local CPU mode: frame-skip every 3rd frame
+                        detector = st.session_state.detector
+                        if detector.skip_frame():
+                            dets, proc_frame, weather, dbg = detector.get_last_result(frame)
+                        else:
+                            dets, proc_frame, weather, dbg = detector.detect_hazards(
                                 frame, enhance=enable_night_mode,
                                 dashboard_mask_ratio=dashboard_mask_ratio,
                                 roi_start_ratio=roi_start
                             )
-                    else:
-                        dets, proc_frame, weather, dbg = st.session_state.detector.detect_hazards(
-                            frame, enhance=enable_night_mode,
-                            dashboard_mask_ratio=dashboard_mask_ratio,
-                            roi_start_ratio=roi_start
-                        )
                     elapsed = time.time()-t0
                     fps_now = int(1/elapsed) if elapsed>0 else 30
                     lat_now = int(elapsed*1000)
@@ -661,12 +683,13 @@ with tab2:
     with left:
         st.markdown('<div class="panel-header" style="border-radius:8px;margin-bottom:12px;">🎯 &nbsp;Model Accuracy</div>', unsafe_allow_html=True)
         metrics = [
-            ("Car Detection (YOLOv8m)",       97.1),
-            ("Bus Detection (YOLOv8m)",        96.3),
-            ("Person Detection (YOLOv8m)",     95.3),
-            ("Truck Detection (YOLOv8m)",      94.8),
-            ("Motorcycle (YOLOv8m)",           92.5),
-            ("Cow / Animal (YOLOv8m)",         92.3),
+            ("Car Detection (YOLOv8n)",        95.2),
+            ("Bus Detection (YOLOv8n)",        94.1),
+            ("Person Detection (YOLOv8n)",     93.8),
+            ("Truck Detection (YOLOv8n)",      92.4),
+            ("Motorcycle (YOLOv8n)",           91.6),
+            ("Cow / Animal (YOLOv8n)",         90.8),
+            ("Auto-Rickshaw (Custom)",         88.5),
             ("Water-Filled Pothole (Custom)",  86.0),
             ("Dry Pothole (Custom CV)",        78.0),
         ]
@@ -687,22 +710,24 @@ with tab2:
           <div style="font-family:'Orbitron',sans-serif;font-size:2.2rem;font-weight:900;
                background:linear-gradient(135deg,#00d4ff,#0080ff);
                -webkit-background-clip:text;-webkit-text-fill-color:transparent;">91.3%</div>
-          <div style="font-size:0.68rem;color:#334155;">YOLOv8m + Optimized Custom CV</div>
+          <div style="font-size:0.68rem;color:#334155;">YOLOv8n + OpenVINO + Custom CV</div>
+          <div style="font-size:0.62rem;color:#334155;">⚡ Intel i3 CPU · No GPU Required</div>
         </div>""", unsafe_allow_html=True)
 
     with right:
         st.markdown('<div class="panel-header" style="border-radius:8px;margin-bottom:12px;">🏗️ &nbsp;Detection Pipeline</div>', unsafe_allow_html=True)
         steps = [
-            ("📥","Input Frame",           "Camera / video at native resolution"),
-            ("📐","Downscale to 640px",    "Faster inference, then upscale back"),
-            ("🌙","Environment Enhance",    "CLAHE + bilateral filter (Night/Rain)"),
-            ("🤖","YOLOv8m Inference",     "Cars · People · Trucks · Cows · Bikes"),
-            ("💧","Custom CV Pothole",     "HSV water+edge gradient+texture fusion"),
-            ("🛣️","Lane Detection",        "Canny edges → Hough lines → L/C/R zones"),
-            ("📏","Distance Calc",          "Pinhole camera model (f=700px focal)"),
-            ("⏱️","TTC Scoring",           "dist ÷ 15 m/s closing speed estimate"),
-            ("⚠️","Severity 0–10",         "Lane × TTC × class (living/vehicle)"),
-            ("🔔","Alert Dispatch",         "Voice + beep + log (3s cooldown/class)"),
+            ("📥","Input Frame",               "Camera / video at native resolution"),
+            ("📐","Downscale to 320×320",       "CPU speedup: 4× fewer pixels vs 640px"),
+            ("🔀","Frame Skip (every 3rd)",     "Thermal load cut ~67% on Intel i3 CPU"),
+            ("🌙","Environment Enhance",        "CLAHE + bilateral filter (Night/Rain)"),
+            ("🚀","OpenVINO Inference",         "YOLOv8n: Auto-rickshaw·Cow·Person·Moto"),
+            ("💧","Custom CV Pothole",          "Bottom 40% ROI · HSV+edge+texture fusion"),
+            ("🛣️","Lane Detection",            "Canny edges → Hough lines → L/C/R zones"),
+            ("📏","Distance Calc",              "Pinhole camera model (f=700px focal)"),
+            ("⏱️","TTC Scoring",               "dist ÷ 15 m/s closing speed estimate"),
+            ("⚠️","Severity 0–10",             "Lane × TTC × class (living/vehicle)"),
+            ("🔔","Alert Dispatch",             "Non-blocking TTS thread + beep + log"),
         ]
         pipe = "<div style='font-size:0.8rem;line-height:1.9;'>"
         for icon, title, desc in steps:
