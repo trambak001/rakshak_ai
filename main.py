@@ -5,6 +5,7 @@ from src.detector import HazardDetector
 from src.utils import alert_manager
 import time
 import os
+import threading   # non-blocking audio alerts
 import pandas as pd
 import random
 import requests
@@ -19,145 +20,235 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── GLOBAL CSS ────────────────────────────────────────────────────────────────
+# ── GLOBAL CSS (Glassmorphism & Cyberpunk HUD) ──────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Inter:wght@300;400;500;600&display=swap');
 
+/* Base Theme */
 html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
-    background: #0a0e1a !important; color: #e2e8f0 !important;
+    background: radial-gradient(circle at 50% -20%, #1a2333 0%, #0b0f19 80%) !important;
+    color: #e2e8f0 !important;
+    font-family: 'Inter', sans-serif;
 }
-[data-testid="stAppViewContainer"] { background: #0a0e1a !important; }
+[data-testid="stAppViewContainer"] { background: transparent !important; }
 [data-testid="stHeader"] { background: transparent !important; }
-.stMainBlockContainer { padding: 1rem 2rem 5rem 2rem !important; }
+.stMainBlockContainer { padding: 1rem 2rem 5rem 2rem !important; max-width: 1400px !important; }
 
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg,#0d1117 0%,#111827 100%) !important;
-    border-right: 1px solid rgba(0,212,255,0.2) !important;
+/* Global Font Override for HUD Feel */
+h1, h2, h3, h4, h5, h6, .stMetricValue, [data-testid="stMetricValue"] {
+    font-family: 'Orbitron', sans-serif !important;
 }
-[data-testid="stSidebar"] * { color: #e2e8f0 !important; }
 
-.sidebar-brand { text-align:center; padding:16px 0 10px; border-bottom:1px solid rgba(0,212,255,0.15); margin-bottom:16px; }
-.sidebar-brand h1 { font-family:'Orbitron',sans-serif; font-size:1.3rem; font-weight:900;
-    background:linear-gradient(135deg,#00d4ff,#7c3aed); -webkit-background-clip:text;
-    -webkit-text-fill-color:transparent; margin:0; }
-.sidebar-brand p { font-size:0.6rem; color:#64748b !important; letter-spacing:2px; margin:4px 0 0; }
+/* Glass Card Reusable Class (Used via markdown injection where possible) */
+.glass-card {
+    background: rgba(13, 17, 23, 0.45);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(0, 212, 255, 0.15);
+    border-radius: 16px;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255,255,255,0.05);
+}
 
-.sidebar-section { font-family:'Orbitron',sans-serif; font-size:0.58rem; font-weight:700;
-    letter-spacing:3px; text-transform:uppercase; color:#00d4ff !important;
-    margin:16px 0 6px; padding-left:8px; border-left:2px solid #00d4ff; }
+/* Video Feed Container Styling */
+/* Targets the image container to wrap the video feed in a glowing HUD frame */
+[data-testid="stImage"] {
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+    padding: 2px;
+    background: linear-gradient(135deg, rgba(0,212,255,0.4), rgba(124,58,237,0.4));
+    box-shadow: 0 0 30px rgba(0, 212, 255, 0.15);
+}
+[data-testid="stImage"] img {
+    border-radius: 10px;
+    display: block;
+}
 
-.cloud-badge { display:inline-flex; align-items:center; gap:6px; padding:6px 12px;
-    background:linear-gradient(135deg,rgba(124,58,237,0.2),rgba(0,128,255,0.2));
-    border:1px solid rgba(124,58,237,0.4); border-radius:8px;
-    font-size:0.7rem; font-weight:600; color:#a78bfa; margin:8px 0; width:100%; justify-content:center; }
-.cloud-dot { width:7px; height:7px; border-radius:50%; background:#a78bfa; animation:pulse-dot 1.5s infinite; }
-.local-badge { background:linear-gradient(135deg,rgba(16,185,129,0.15),rgba(0,212,255,0.1));
-    border:1px solid rgba(16,185,129,0.3); color:#34d399; }
-.local-dot { background:#34d399; }
+/* Sidebar - Control Panel Styling */
+[data-testid="stSidebar"] {
+    background: rgba(8, 11, 18, 0.85) !important;
+    backdrop-filter: blur(20px) !important;
+    border-right: 1px solid rgba(0,212,255,0.15) !important;
+}
+[data-testid="stSidebar"] * { color: #cbd5e1 !important; }
 
+.sidebar-brand { text-align:center; padding:20px 0 10px; border-bottom:1px solid rgba(0,212,255,0.1); margin-bottom:20px; }
+.sidebar-brand h1 { 
+    font-family:'Orbitron',sans-serif; font-size:1.6rem; font-weight:900;
+    background:linear-gradient(135deg, #00f0ff, #0080ff); -webkit-background-clip:text;
+    -webkit-text-fill-color:transparent; margin:0; text-shadow: 0 0 20px rgba(0,240,255,0.3);
+}
+.sidebar-brand p { font-size:0.65rem; color:#64748b !important; letter-spacing:3px; margin:6px 0 0; }
+
+.sidebar-section { 
+    font-family:'Orbitron',sans-serif; font-size:0.6rem; font-weight:700;
+    letter-spacing:3px; text-transform:uppercase; color:#00f0ff !important;
+    margin:24px 0 12px; padding-left:10px; border-left:3px solid #00f0ff; 
+}
+
+/* Streamlit Native Widgets inside Sidebar */
+.stSlider > div > div > div > div { background: #00f0ff !important; }
+.stSlider > div > div > div { background: rgba(0,240,255,0.2) !important; }
+
+/* Buttons inside form/sidebar */
 .stButton > button {
-    background:linear-gradient(135deg,rgba(0,212,255,0.1),rgba(0,128,255,0.1)) !important;
-    border:1px solid rgba(0,212,255,0.35) !important; border-radius:8px !important;
-    color:#00d4ff !important; font-weight:600 !important; font-size:0.8rem !important;
-    padding:10px 16px !important; transition:all 0.25s !important;
-    text-transform:uppercase !important; letter-spacing:1px !important;
+    background: rgba(0, 212, 255, 0.05) !important;
+    border: 1px solid rgba(0, 212, 255, 0.4) !important; 
+    border-radius: 8px !important;
+    color: #00f0ff !important; font-weight: 600 !important; font-size: 0.85rem !important;
+    padding: 12px 20px !important; transition: all 0.3s ease !important;
+    text-transform: uppercase !important; letter-spacing: 2px !important;
+    backdrop-filter: blur(4px);
 }
 .stButton > button:hover {
-    background:linear-gradient(135deg,rgba(0,212,255,0.25),rgba(0,128,255,0.25)) !important;
-    box-shadow:0 0 18px rgba(0,212,255,0.25) !important; transform:translateY(-1px) !important;
+    background: rgba(0, 212, 255, 0.15) !important;
+    box-shadow: 0 0 20px rgba(0, 212, 255, 0.4) !important; 
+    transform: translateY(-2px) !important;
+    border-color: #00f0ff !important;
 }
+.stButton > button:active { transform: translateY(0) !important; }
 
-.header-title { font-family:'Orbitron',sans-serif; font-size:2.6rem; font-weight:900;
-    background:linear-gradient(135deg,#00d4ff 0%,#0080ff 50%,#7c3aed 100%);
-    -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin:0; line-height:1; }
-.header-sub { font-size:0.78rem; color:#475569; letter-spacing:2px; text-transform:uppercase; margin:5px 0 0; }
+/* Cloud/Local Badges */
+.cloud-badge { 
+    display:flex; align-items:center; gap:8px; padding:10px 14px;
+    background: rgba(124, 58, 237, 0.1); border: 1px solid rgba(124, 58, 237, 0.3); 
+    border-radius: 8px; font-size: 0.75rem; font-weight: 600; color: #c4b5fd; 
+    margin: 8px 0; width: 100%; justify-content: center; letter-spacing: 1px;
+}
+.cloud-dot { width:8px; height:8px; border-radius:50%; background:#a78bfa; animation:pulse-dot 1.5s infinite; box-shadow: 0 0 10px #a78bfa; }
+.local-badge { background:rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); color: #6ee7b7; }
+.local-dot { background:#34d399; box-shadow: 0 0 10px #34d399; }
 
-.status-badge { display:inline-flex; align-items:center; gap:8px; padding:7px 14px;
-    border-radius:50px; font-size:0.68rem; font-weight:700; letter-spacing:2px;
-    text-transform:uppercase; font-family:'Orbitron',sans-serif; }
-.status-live { background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#10b981; }
-.status-standby { background:rgba(100,116,139,0.1); border:1px solid #334155; color:#64748b; }
-.status-dot { width:7px; height:7px; border-radius:50%; }
-.dot-live { background:#10b981; animation:pulse-dot 1.3s infinite; }
-.dot-standby { background:#475569; }
+/* Header Elements */
+.header-title { 
+    font-size: 3rem; font-weight: 900;
+    background: linear-gradient(135deg, #ffffff 0%, #a5b4fc 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
+    margin: 0; line-height: 1.1; letter-spacing: 2px;
+}
+.header-sub { font-size: 0.85rem; color: #64748b; letter-spacing: 3px; text-transform: uppercase; margin: 8px 0 0; }
+
+.status-badge { 
+    display: inline-flex; align-items: center; gap: 8px; padding: 6px 16px;
+    border-radius: 50px; font-size: 0.7rem; font-weight: 700; letter-spacing: 2px;
+    text-transform: uppercase; font-family: 'Orbitron', sans-serif; 
+}
+.status-live { background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16,185,129,0.4); color: #10b981; box-shadow: 0 0 15px rgba(16,185,129,0.2); }
+.status-standby { background: rgba(100, 116, 139, 0.1); border: 1px solid #334155; color: #64748b; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot-live { background: #10b981; animation: pulse-dot 1.5s infinite; box-shadow: 0 0 8px #10b981; }
+.dot-standby { background: #475569; }
 @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-.hud-row { display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
-.hud-card { flex:1; min-width:80px; background:rgba(13,17,23,0.85); border:1px solid rgba(0,212,255,0.12);
-    border-radius:10px; padding:14px 10px; text-align:center; position:relative; overflow:hidden; }
-.hud-card::before { content:''; position:absolute; top:0; left:0; right:0; height:2px;
-    background:linear-gradient(90deg,transparent,#00d4ff,transparent); }
-.hud-card-value { font-family:'Orbitron',sans-serif; font-size:1.6rem; font-weight:900; color:#00d4ff; line-height:1; margin-bottom:2px; }
-.hud-card-label { font-size:0.55rem; letter-spacing:2px; text-transform:uppercase; color:#475569; }
-.hud-card-crit .hud-card-value { color:#ef4444; }
-.hud-card-crit::before { background:linear-gradient(90deg,transparent,#ef4444,transparent); }
-.hud-card-warn .hud-card-value { color:#f59e0b; }
-.hud-card-warn::before { background:linear-gradient(90deg,transparent,#f59e0b,transparent); }
-.hud-card-ok .hud-card-value { color:#10b981; }
-.hud-card-ok::before { background:linear-gradient(90deg,transparent,#10b981,transparent); }
-.hud-card-cloud .hud-card-value { color:#a78bfa; }
-.hud-card-cloud::before { background:linear-gradient(90deg,transparent,#a78bfa,transparent); }
+/* Native Streamlit Metrics Styling */
+[data-testid="stMetric"] { 
+    background: rgba(13, 17, 23, 0.45) !important; 
+    backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(0, 212, 255, 0.15) !important; 
+    border-radius: 12px !important; 
+    padding: 16px 20px !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+}
+[data-testid="stMetricValue"] { color: #00f0ff !important; font-size: 2rem !important; }
+[data-testid="stMetricLabel"] { color: #94a3b8 !important; font-size: 0.75rem !important; letter-spacing: 2px !important; text-transform: uppercase; }
 
-.panel-header { font-family:'Orbitron',sans-serif; font-size:0.6rem; font-weight:700;
-    letter-spacing:2px; text-transform:uppercase; color:#00d4ff;
-    padding:10px 14px; background:rgba(0,212,255,0.04);
-    border-bottom:1px solid rgba(0,212,255,0.12); border-radius:8px 8px 0 0; }
+/* Custom HUD Cards (for old row) */
+.hud-row { display:flex; gap:12px; margin-bottom:24px; flex-wrap:wrap; }
+.hud-card { 
+    flex:1; min-width:90px; 
+    background: rgba(13, 17, 23, 0.5); backdrop-filter: blur(10px);
+    border: 1px solid rgba(0, 212, 255, 0.1); border-radius: 12px; 
+    padding: 16px 10px; text-align: center; position: relative; overflow: hidden; 
+}
+.hud-card::before { 
+    content:''; position:absolute; top:0; left:0; right:0; height:2px;
+    background: linear-gradient(90deg, transparent, #00f0ff, transparent); 
+}
+.hud-card-value { font-family:'Orbitron',sans-serif; font-size:1.8rem; font-weight:700; color:#00f0ff; line-height:1; margin-bottom:4px; }
+.hud-card-label { font-size:0.6rem; letter-spacing:2px; text-transform:uppercase; color:#64748b; font-weight:600; }
+.hud-card-crit .hud-card-value { color:#ff3366; text-shadow: 0 0 10px rgba(255,51,102,0.4); }
+.hud-card-crit::before { background:linear-gradient(90deg,transparent,#ff3366,transparent); }
+.hud-card-warn .hud-card-value { color:#ffcc00; }
+.hud-card-warn::before { background:linear-gradient(90deg,transparent,#ffcc00,transparent); }
+.hud-card-ok .hud-card-value { color:#00e676; }
+.hud-card-ok::before { background:linear-gradient(90deg,transparent,#00e676,transparent); }
 
-.alert-item { padding:9px 12px; border-radius:7px; margin:5px 0; font-size:0.76rem;
-    border-left:3px solid; animation:fadeSlide 0.3s ease; line-height:1.4; }
-.alert-critical { background:rgba(239,68,68,0.08); border-color:#ef4444; color:#fca5a5; }
-.alert-warning  { background:rgba(245,158,11,0.08); border-color:#f59e0b; color:#fcd34d; }
-.alert-info     { background:rgba(0,212,255,0.06); border-color:#00d4ff; color:#67e8f9; }
-.alert-safe     { background:rgba(16,185,129,0.06); border-color:#10b981; color:#6ee7b7; }
-@keyframes fadeSlide { from{opacity:0;transform:translateX(-8px)} to{opacity:1;transform:translateX(0)} }
+/* Alert Log Panel */
+.panel-header { 
+    font-family:'Orbitron',sans-serif; font-size:0.7rem; font-weight:700;
+    letter-spacing:2px; text-transform:uppercase; color:#00f0ff;
+    padding:14px 18px; background: rgba(0, 212, 255, 0.05);
+    border-bottom: 1px solid rgba(0, 212, 255, 0.15); 
+    border-radius: 12px 12px 0 0; 
+}
 
-.acc-bar-wrapper { margin:7px 0; }
-.acc-bar-label { display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:3px; color:#94a3b8; }
-.acc-bar-label span:last-child { color:#00d4ff; font-weight:600; }
-.acc-bar-bg { background:rgba(255,255,255,0.04); border-radius:99px; height:5px; overflow:hidden; }
-.acc-bar-fill { height:100%; border-radius:99px; background:linear-gradient(90deg,#0080ff,#00d4ff); }
+.alert-container {
+    background: rgba(13, 17, 23, 0.45); backdrop-filter: blur(12px);
+    border: 1px solid rgba(0, 212, 255, 0.15); border-radius: 12px;
+    overflow: hidden;
+}
+.alert-list { padding: 10px; max-height: 450px; overflow-y: auto; }
 
-.sev-pill { display:inline-block; padding:2px 8px; border-radius:99px; font-size:0.62rem; font-weight:700; letter-spacing:1px; text-transform:uppercase; }
-.sev-crit { background:rgba(239,68,68,0.15); color:#ef4444; border:1px solid rgba(239,68,68,0.3); }
-.sev-warn { background:rgba(245,158,11,0.15); color:#f59e0b; border:1px solid rgba(245,158,11,0.3); }
-.sev-info { background:rgba(0,212,255,0.1); color:#00d4ff; border:1px solid rgba(0,212,255,0.2); }
+.alert-item { 
+    padding: 12px 14px; border-radius: 8px; margin-bottom: 8px; font-size: 0.8rem;
+    border-left: 4px solid; animation: fadeSlide 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    background: rgba(255,255,255,0.02);
+    display: flex; flex-direction: column; gap: 4px;
+}
+.alert-critical { background: linear-gradient(90deg, rgba(239,68,68,0.15), rgba(239,68,68,0.02)); border-color:#ff3366; color:#e2e8f0; }
+.alert-warning  { background: linear-gradient(90deg, rgba(245,158,11,0.15), rgba(245,158,11,0.02)); border-color:#ffcc00; color:#e2e8f0; }
+.alert-info     { background: linear-gradient(90deg, rgba(0,212,255,0.1), rgba(0,212,255,0.02)); border-color:#00f0ff; color:#e2e8f0; }
 
-.stTabs [data-baseweb="tab-list"] { background:rgba(13,17,23,0.6) !important; border-radius:10px !important; padding:4px !important; gap:4px !important; border:1px solid rgba(0,212,255,0.1) !important; }
-.stTabs [data-baseweb="tab"] { color:#64748b !important; font-family:'Orbitron',sans-serif !important; font-size:0.65rem !important; font-weight:700 !important; letter-spacing:1px !important; border-radius:7px !important; padding:7px 14px !important; }
-.stTabs [aria-selected="true"] { background:linear-gradient(135deg,rgba(0,212,255,0.12),rgba(0,128,255,0.12)) !important; color:#00d4ff !important; border:1px solid rgba(0,212,255,0.25) !important; }
+.alert-item-header { display: flex; justify-content: space-between; align-items: center; }
+.alert-time { font-family: 'Orbitron', monospace; color: #64748b; font-size: 0.7rem; }
+.alert-title { font-family: 'Orbitron', sans-serif; font-weight: 700; letter-spacing: 1px; color: #fff; }
+.alert-meta { font-size:0.75rem; color:#94a3b8; display: flex; gap: 10px; }
 
-[data-testid="stMetric"] { background:rgba(13,17,23,0.8) !important; border:1px solid rgba(0,212,255,0.12) !important; border-radius:10px !important; padding:12px !important; }
-[data-testid="stMetricValue"] { color:#00d4ff !important; font-family:'Orbitron',sans-serif !important; }
-[data-testid="stMetricLabel"] { color:#64748b !important; font-size:0.65rem !important; letter-spacing:1px !important; }
+.sev-pill { 
+    display:inline-block; padding:3px 10px; border-radius:50px; font-size:0.65rem; 
+    font-weight:700; letter-spacing:1px; text-transform:uppercase; font-family:'Orbitron',sans-serif;
+}
+.sev-crit { background:rgba(255,51,102,0.2); color:#ff3366; border:1px solid rgba(255,51,102,0.4); box-shadow: 0 0 10px rgba(255,51,102,0.2); }
+.sev-warn { background:rgba(255,204,0,0.2); color:#ffcc00; border:1px solid rgba(255,204,0,0.4); }
 
-[data-testid="stFileUploader"] { background:rgba(0,212,255,0.02) !important; border:1.5px dashed rgba(0,212,255,0.25) !important; border-radius:10px !important; }
-hr { border-color:rgba(0,212,255,0.08) !important; }
-::-webkit-scrollbar { width:3px; }
-::-webkit-scrollbar-track { background:#0a0e1a; }
-::-webkit-scrollbar-thumb { background:#1e3a5f; border-radius:99px; }
+@keyframes fadeSlide { from{opacity:0;transform:translateX(-15px)} to{opacity:1;transform:translateX(0)} }
 
-.road-anim { position:fixed; bottom:0; left:0; width:100%; height:50px;
-    border-top:1px solid rgba(0,212,255,0.08); overflow:hidden; pointer-events:none; z-index:999; }
-.road-line { position:absolute; top:50%; height:1px; width:50px;
-    background:linear-gradient(90deg,transparent,rgba(0,212,255,0.3),transparent);
-    animation:roadMove 2.5s linear infinite; }
+/* Scrollbar styling for log */
+.alert-list::-webkit-scrollbar { width: 4px; }
+.alert-list::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); border-radius: 4px; }
+.alert-list::-webkit-scrollbar-thumb { background: rgba(0,212,255,0.3); border-radius: 4px; }
+.alert-list::-webkit-scrollbar-thumb:hover { background: rgba(0,212,255,0.6); }
+
+/* File Uploader styling */
+[data-testid="stFileUploader"] { 
+    background: rgba(0, 212, 255, 0.03) !important; 
+    border: 1px dashed rgba(0, 212, 255, 0.3) !important; 
+    border-radius: 12px !important; 
+    padding: 20px !important;
+}
+
+hr { border-color: rgba(255,255,255,0.08) !important; margin: 2rem 0 !important; }
+
+/* Animated road element for background flavor */
+.road-anim { 
+    position:fixed; bottom:0; left:0; width:100%; height:80px;
+    border-top:1px solid rgba(0,212,255,0.1); overflow:hidden; pointer-events:none; z-index:-1;
+    background: linear-gradient(180deg, transparent, rgba(0, 212, 255, 0.03));
+}
+.road-line { 
+    position:absolute; top:50%; height:2px; width:100px;
+    background:linear-gradient(90deg,transparent,#00f0ff,transparent);
+    animation:roadMove 2s linear infinite; opacity: 0.4;
+}
 .road-line:nth-child(1){left:5%;animation-delay:0s}
-.road-line:nth-child(2){left:25%;animation-delay:0.8s}
-.road-line:nth-child(3){left:50%;animation-delay:1.6s}
-.road-line:nth-child(4){left:75%;animation-delay:0.4s}
-@keyframes roadMove { 0%{transform:translateX(-80px)} 100%{transform:translateX(500px)} }
-
-.cloud-panel { background:linear-gradient(135deg,rgba(124,58,237,0.08),rgba(0,128,255,0.05));
-    border:1px solid rgba(124,58,237,0.25); border-radius:12px; padding:16px; margin-bottom:12px; }
-.cloud-panel h4 { font-family:'Orbitron',sans-serif; font-size:0.7rem; color:#a78bfa; letter-spacing:2px; margin:0 0 10px; }
-
-.info-box { background:rgba(0,212,255,0.04); border:1px solid rgba(0,212,255,0.12);
-    border-radius:10px; padding:14px; margin:8px 0; font-size:0.8rem; color:#94a3b8; line-height:1.6; }
+.road-line:nth-child(2){left:35%;animation-delay:0.7s}
+.road-line:nth-child(3){left:65%;animation-delay:1.4s}
+@keyframes roadMove { 0%{transform:translateX(-150px) scaleX(0.5); opacity: 0;} 20%{opacity: 0.6;} 80%{opacity: 0.6;} 100%{transform:translateX(800px) scaleX(1.5); opacity: 0;} }
 </style>
+
 <div class="road-anim">
-  <div class="road-line"></div><div class="road-line"></div>
-  <div class="road-line"></div><div class="road-line"></div>
+  <div class="road-line"></div><div class="road-line"></div><div class="road-line"></div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -167,7 +258,7 @@ def init_state():
         'detector': None, 'stop_detection': False, 'is_detecting': False,
         'simulated_speed': 0, 'weather_status': 'DAYLIGHT',
         'current_fps': 0, 'current_latency': 0, 'last_alert_time': {},
-        'alert_log': [], 'colab_url': '', 'use_cloud': True,
+        'alert_log': [],
         'session_stats': {'total_detections':0,'critical_count':0,'warning_count':0,'frames_processed':0,'start_time':None},
     }
     for k,v in defs.items():
@@ -178,6 +269,49 @@ def init_state():
 
 init_state()
 
+# ── ASYNC INFERENCE WORKER ──────────────────────────────────────────────────
+def inference_worker():
+    """Background daemon thread for AI inference. 
+    Grabs the latest frame from st.session_state.latest_frame_in,
+    runs the heavy detector, and posts to st.session_state.latest_result."""
+    import time
+    import cv2
+    import streamlit as st
+    
+    while not getattr(st.session_state, 'stop_detection', False):
+        try:
+            # We don't want to choke the CPU, sleep briefly if no new frame
+            input_data = getattr(st.session_state, 'latest_frame_in', None)
+            if input_data is not None:
+                frame, en_nm, dmr, rsr = input_data
+                t0 = time.time()
+                
+                det_input = cv2.resize(frame, (320, 320))
+                detector = st.session_state.detector
+                dets, proc_frame, weather, dbg = detector.detect_hazards(
+                    det_input, enhance=en_nm, 
+                    dashboard_mask_ratio=dmr, roi_start_ratio=rsr
+                )
+                
+                elapsed = time.time() - t0
+                
+                # We assign a timestamp to know when a NEW result arrived
+                st.session_state.latest_result = {
+                    'dets': dets,
+                    'proc_frame': proc_frame,
+                    'weather': weather,
+                    'dbg': dbg,
+                    'elapsed': elapsed,
+                    'res_time': time.time()
+                }
+                
+                # Done with this frame
+                st.session_state.latest_frame_in = None
+            else:
+                time.sleep(0.01) # 10ms rest
+        except Exception as e:
+            time.sleep(0.1)
+
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
@@ -186,36 +320,8 @@ with st.sidebar:
       <p>Road Hazard Intelligence v2.0</p>
     </div>""", unsafe_allow_html=True)
 
-    # ── CLOUD / LOCAL TOGGLE ──
-    st.markdown('<div class="sidebar-section">☁️ Processing Engine</div>', unsafe_allow_html=True)
-    use_cloud = st.toggle("Use Cloud GPU (Google Colab)", value=True,
-                          help="Process frames on a free Google Colab T4 GPU for 10x faster FPS")
-    st.session_state.use_cloud = use_cloud
-
-    if use_cloud:
-        st.markdown('<div class="cloud-badge"><div class="cloud-dot"></div>Cloud GPU Mode Active</div>', unsafe_allow_html=True)
-        colab_url = st.text_input("Colab Backend URL",
-                                  value=st.session_state.colab_url,
-                                  placeholder="https://xxxx-xx-xx.ngrok-free.app",
-                                  help="Paste the ngrok URL from your Colab notebook")
-        st.session_state.colab_url = colab_url
-        if not colab_url:
-            with st.expander("📋 How to get free Cloud GPU"):
-                st.markdown("""
-**Step 1:** Open `Rakshak_Cloud_Backend.ipynb` in Google Colab
-
-**Step 2:** Click **Runtime → Run All**
-
-**Step 3:** Copy the `ngrok` URL that appears
-
-**Step 4:** Paste it above ↑
-
-✅ Free T4 GPU · ~10x faster FPS
-                """)
-    else:
-        st.markdown('<div class="cloud-badge local-badge"><div class="cloud-dot local-dot"></div>Local CPU Mode</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="sidebar-section">🎯 Detection Mode</div>', unsafe_allow_html=True)
+    # ── CAMERA / VIDEO SOURCE ──
+    st.markdown('<div class="sidebar-section">🎯 Detection Source</div>', unsafe_allow_html=True)
     detection_mode = st.radio("", ["📹 Video File", "📷 Live Camera"], label_visibility="collapsed")
 
     st.markdown('<div class="sidebar-section">⚙️ AI Settings</div>', unsafe_allow_html=True)
@@ -251,40 +357,6 @@ with st.sidebar:
     </div>""", unsafe_allow_html=True)
 
 
-# ─── CLOUD API HELPER ─────────────────────────────────────────────────────────
-def detect_via_cloud(frame, colab_url, sensitivity, enable_night, dashboard_mask_ratio, roi_start):
-    """Send frame to Colab GPU backend, get detections back."""
-    try:
-        _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-        b64 = base64.b64encode(buf).decode('utf-8')
-        payload = {
-            'image': b64,
-            'sensitivity': sensitivity,
-            'enhance': enable_night,
-            'dashboard_mask_ratio': dashboard_mask_ratio,
-            'roi_start_ratio': roi_start
-        }
-        resp = requests.post(f"{colab_url.rstrip('/')}/detect",
-                             json=payload, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            detections = data.get('detections', [])
-            weather = data.get('weather', {'status': 'DAYLIGHT', 'is_night': False})
-            # Decode annotated frame if provided
-            if 'frame' in data:
-                frame_bytes = base64.b64decode(data['frame'])
-                nparr = np.frombuffer(frame_bytes, np.uint8)
-                proc_frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            else:
-                proc_frame = frame.copy()
-            return detections, proc_frame, weather, None
-        else:
-            st.warning(f"Cloud API error {resp.status_code} — falling back to local")
-            return None, None, None, None
-    except Exception as e:
-        st.warning(f"Cloud unreachable ({e}) — falling back to local")
-        return None, None, None, None
-
 
 # ─── DRAW OVERLAYS ─────────────────────────────────────────────────────────────
 def draw_detections(frame, detections, sensitivity_thresh):
@@ -312,7 +384,7 @@ def draw_detections(frame, detections, sensitivity_thresh):
             color = (50, 50, 255);  alert_class = "critical"
         elif pl == 2 or severity >= 5:
             color = (30, 140, 255); alert_class = "warning"
-        elif pl == 1:
+        elif pl == 1 or severity >= 3:
             color = (0, 220, 220);  alert_class = "info"
         else:
             color = (30, 210, 100); alert_class = "safe"
@@ -350,22 +422,51 @@ def draw_detections(frame, detections, sensitivity_thresh):
 
 
 def fire_alerts(alerts_list):
+    """
+    Dispatch hazard alerts for detections that exceed the severity threshold.
+
+    Audio alerts (beep + voice) are explicitly fired in a daemon thread so
+    the caller (detection loop) NEVER blocks waiting for audio to finish.
+    Pattern:
+        threading.Thread(target=alert_manager.trigger_hazard_alert,
+                         args=(...), daemon=True).start()
+    """
     cur = time.time()
     last = st.session_state.last_alert_time
     for a in alerts_list:
         lbl, sev, pl = a['label'], a['severity'], a['pl']
         if cur - last.get(lbl, 0) < 3.0: continue
-        if sev >= 7 or pl == 3:
-            alert_manager.trigger_hazard_alert(lbl, a['is_water'], a['lane'])
+        
+        # We only log/toast hazards with Severity >= 3 or any critical pothole level
+        if sev >= 3 or pl >= 1:
+            if sev >= 7 or pl == 3:
+                # ── NON-BLOCKING AUDIO: thread fires and main loop continues immediately ──
+                threading.Thread(
+                    target=alert_manager.trigger_hazard_alert,
+                    args=(lbl, a['is_water'], a['lane']),
+                    daemon=True,
+                    name="RakshakAlert",
+                ).start()
+                icon = "💧" if a['is_water'] else "🔥"
+                toast_msg = f"🚨 {lbl.upper()} · {a['lane']}"
+            else:
+                icon = "⚠️"
+                toast_msg = f"⚠️ {lbl.upper()} · {a['lane']}"
+
             last[lbl] = cur
-            icon = "💧" if a['is_water'] else "🔥"
-            st.toast(f"🚨 {lbl.upper()} · {a['lane']}", icon=icon)
+            st.toast(toast_msg, icon=icon)
+
             if sev >= 8 or pl == 3:
                 st.session_state.session_stats['critical_count'] += 1
+                sev_lbl = "CRITICAL"
+            elif sev <= 4:
+                st.session_state.session_stats['warning_count'] += 1
+                sev_lbl = "SOFT WARNING"
             else:
                 st.session_state.session_stats['warning_count'] += 1
+                sev_lbl = "WARNING"
+
             ts = time.strftime('%H:%M:%S')
-            sev_lbl = "CRITICAL" if (sev>=8 or pl==3) else "WARNING"
             st.session_state.alert_log.insert(0,{
                 'time':ts,'label':lbl,'lane':a['lane'],'dist':a['dist'],
                 'ttc':a['ttc'],'sev':sev_lbl,'alert_class':a['alert_class']
@@ -376,17 +477,38 @@ def fire_alerts(alerts_list):
 
 def render_log_html(log, limit=10):
     if not log:
-        return '<div style="color:#334155;text-align:center;padding:18px;font-size:0.78rem;">No alerts yet</div>'
-    html = ""
+        return '''
+        <div class="alert-container" style="text-align:center; padding:30px 10px; color:#64748b;">
+          <div style="font-size:2rem; margin-bottom:10px;">🛡️</div>
+          <div style="font-family:'Orbitron',sans-serif; letter-spacing:1px; font-size:0.8rem;">ROAD CLEAR</div>
+          <div style="font-size:0.65rem; margin-top:5px; opacity:0.6;">No hazards detected yet</div>
+        </div>
+        '''
+    
+    html = '<div class="alert-container"><div class="alert-list">'
     for al in log[:limit]:
         cls = f"alert-{al['alert_class']}"
-        pill_cls = "sev-crit" if al['sev']=="CRITICAL" else "sev-warn"
+        if al['sev'] == "CRITICAL":
+            pill_cls = "sev-crit"
+        elif al['sev'] == "SOFT WARNING":
+            pill_cls = "sev-info" 
+        else:
+            pill_cls = "sev-warn"
+            
         html += f"""
         <div class="alert-item {cls}">
-          <strong>{al['time']}</strong> &nbsp;{al['label'].upper()}&nbsp;
-          <span class="sev-pill {pill_cls}">{al['sev']}</span><br>
-          <span style="font-size:0.7rem;opacity:0.8;">{al['lane']} · {al['dist']}m · TTC:{al['ttc']}s</span>
+          <div class="alert-item-header">
+            <span class="alert-title">{al['label'].upper()}</span>
+            <span class="sev-pill {pill_cls}">{al['sev']}</span>
+          </div>
+          <div class="alert-meta">
+            <span class="alert-time">{al['time']}</span>
+            <span>{al['lane']}</span>
+            <span>{al['dist']}m</span>
+            <span>TTC:{al['ttc']}s</span>
+          </div>
         </div>"""
+    html += '</div></div>'
     return html
 
 
@@ -397,23 +519,23 @@ dc  = "dot-live"    if is_live else "dot-standby"
 bt  = "LIVE DETECTION" if is_live else "STANDBY"
 spd = st.session_state.simulated_speed if is_live else random.randint(0,3)
 wic = "🌙" if st.session_state.weather_status == "NIGHT" else "☀️"
-engine_tag = "☁️ CLOUD GPU" if st.session_state.use_cloud and st.session_state.colab_url else "💻 OpenVINO CPU"
+engine_tag = "💻 Local CPU"
 
 h1, h2 = st.columns([3,1])
 with h1:
     st.markdown(f"""
     <h1 class="header-title">RAKSHAK AI</h1>
-    <p class="header-sub">Indian Road Hazard Detection · Collision Intelligence · 91.3% mAP · YOLOv8n + OpenVINO</p>
+    <p class="header-sub">Advanced Driver Assistance System · Collision Intelligence</p>
     """, unsafe_allow_html=True)
 with h2:
     st.markdown(f"""
     <div style="text-align:right;padding-top:6px;">
       <div class="status-badge {bc}"><div class="status-dot {dc}"></div>{bt}</div>
       <div style="margin-top:10px;font-family:'Orbitron',sans-serif;font-size:2.2rem;
-           font-weight:900;color:#00d4ff;line-height:1;text-align:right;">
-        {spd}<span style="font-size:0.75rem;color:#475569;"> km/h</span>
+           font-weight:900;color:#00f0ff;line-height:1;text-align:right;">
+        {spd}<span style="font-size:0.75rem;color:#64748b;"> km/h</span>
       </div>
-      <div style="font-size:0.62rem;color:#334155;text-align:right;letter-spacing:1px;">
+      <div style="font-size:0.62rem;color:#94a3b8;text-align:right;letter-spacing:1px; margin-top:5px;">
         {wic} {st.session_state.weather_status} &nbsp;·&nbsp; {engine_tag}
       </div>
     </div>""", unsafe_allow_html=True)
@@ -421,39 +543,21 @@ with h2:
 # ─── HUD ROW ─────────────────────────────────────────────────────────────────
 s = st.session_state.session_stats
 fps_v, lat_v = st.session_state.current_fps, st.session_state.current_latency
-cloud_active = st.session_state.use_cloud and bool(st.session_state.colab_url)
 
-st.markdown(f"""
-<div class="hud-row">
-  <div class="hud-card {'hud-card-ok' if fps_v>=15 else 'hud-card-warn' if fps_v>0 else ''}">
-    <div class="hud-card-value">{fps_v or '—'}</div>
-    <div class="hud-card-label">FPS</div>
-  </div>
-  <div class="hud-card {'hud-card-ok' if lat_v<80 else 'hud-card-warn' if lat_v<200 else 'hud-card-crit' if lat_v>0 else ''}">
-    <div class="hud-card-value">{lat_v or '—'}</div>
-    <div class="hud-card-label">Latency ms</div>
-  </div>
-  <div class="hud-card {'hud-card-crit' if s['critical_count']>0 else ''}">
-    <div class="hud-card-value">{s['critical_count']}</div>
-    <div class="hud-card-label">Critical</div>
-  </div>
-  <div class="hud-card {'hud-card-warn' if s['warning_count']>0 else ''}">
-    <div class="hud-card-value">{s['warning_count']}</div>
-    <div class="hud-card-label">Warnings</div>
-  </div>
-  <div class="hud-card">
-    <div class="hud-card-value">{s['frames_processed']}</div>
-    <div class="hud-card-label">Frames</div>
-  </div>
-  <div class="hud-card {'hud-card-cloud' if cloud_active else ''}">
-    <div class="hud-card-value">{'☁️' if cloud_active else '💻'}</div>
-    <div class="hud-card-label">{'Colab GPU' if cloud_active else 'Local CPU'}</div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+c1, c2, c3 = st.columns(3)
+with c1:
+    stat_msg = "🟢 SYSTEMS OPTIMAL" if fps_v > 0 else "⚫ STANDBY"
+    if s['critical_count'] > 0: stat_msg = "🔴 HAZARD DETECTED"
+    elif s['warning_count'] > 0: stat_msg = "🟡 CAUTION"
+    st.metric("System Status", stat_msg, f"{s['frames_processed']} frames")
+with c2:
+    st.metric("Current Weather", st.session_state.weather_status, "Visibility OK")
+with c3:
+    st.metric("Processing Engine", "FPS: " + str(fps_v if fps_v else '—'), f"{lat_v if lat_v else '—'} ms latency", delta_color="inverse")
 
 # ─── MAIN TABS ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["🛰️  LIVE DETECTION", "📊  ANALYTICS", "☁️  CLOUD SETUP"])
+
+tab1, tab2 = st.tabs(["🛰️  LIVE DETECTION", "📊  ANALYTICS"])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 · DETECTION
@@ -505,75 +609,67 @@ with tab1:
                     'warning_count':0,'frames_processed':0,'start_time':time.time()
                 }
 
+                if 'inference_thread' not in st.session_state or not st.session_state.inference_thread.is_alive():
+                    st.session_state.latest_frame_in = None
+                    st.session_state.latest_result = None
+                    t = threading.Thread(target=inference_worker, daemon=True, name="RakshakAI_Inference")
+                    t.start()
+                    st.session_state.inference_thread = t
+
                 progress = st.progress(0, text="🔍 Analyzing…")
-                fidx, frame_skip = 0, 1  # process every frame when on cloud
-                # CPU optimization: process every 3rd frame to reduce thermal load.
-                # Skipped frames reuse the last detection result (zero CPU cost).
-                # Frame-skip counter is managed by detector.skip_frame().
-                if not cloud_active:
-                    frame_skip = 3  # Local CPU: every 3rd frame (matches detector._SKIP_N)
+                fidx       = 0
 
                 while cap.isOpened() and not st.session_state.stop_detection:
-                    for _ in range(frame_skip):
-                        ret, frame = cap.read()
-                        if not ret: break
-                        fidx += 1
+                    ret, frame = cap.read()
                     if not ret: break
+                    fidx += 1
 
-                    t0 = time.time()
+                    # 1. Feed the AI thread
+                    if getattr(st.session_state, 'latest_frame_in', None) is None:
+                        st.session_state.latest_frame_in = (frame.copy(), enable_night_mode, dashboard_mask_ratio, roi_start)
 
-                    if cloud_active:
-                        dets, proc_frame, weather, dbg = detect_via_cloud(
-                            frame, st.session_state.colab_url,
-                            sensitivity, enable_night_mode, dashboard_mask_ratio, roi_start
-                        )
-                        if dets is None:  # fallback to local with frame-skip
-                            detector = st.session_state.detector
-                            if detector.skip_frame():
-                                dets, proc_frame, weather, dbg = detector.get_last_result(frame)
-                            else:
-                                dets, proc_frame, weather, dbg = detector.detect_hazards(
-                                    frame, enhance=enable_night_mode,
-                                    dashboard_mask_ratio=dashboard_mask_ratio,
-                                    roi_start_ratio=roi_start
-                                )
-                    else:
-                        # Local CPU mode: use built-in frame-skip (every 3rd frame)
-                        detector = st.session_state.detector
-                        if detector.skip_frame():
-                            dets, proc_frame, weather, dbg = detector.get_last_result(frame)
+                    # 2. Get the latest AI result for drawing
+                    res = getattr(st.session_state, 'latest_result', None)
+                    
+                    disp_frame = frame.copy()
+                    
+                    if res is not None:
+                        dets = res['dets']
+                        weather = res['weather']
+                        dbg = res['dbg']
+                        elapsed = res['elapsed']
+                        res_time = res['res_time']
+                        
+                        fps_now = int(1/elapsed) if elapsed>0 else 30
+                        lat_now = int(elapsed*1000)
+                        
+                        st.session_state.current_fps = fps_now
+                        st.session_state.current_latency = lat_now
+                        st.session_state.weather_status = weather.get('status','DAYLIGHT')
+                        
+                        # Apply bounding boxes on the full-res disp_frame
+                        disp_frame, alerts = draw_detections(disp_frame, dets, sensitivity)
+                        
+                        # Only trigger alerts and stats metrics ONCE per unique AI result
+                        last_res_time = getattr(st.session_state, 'last_res_time', 0)
+                        if res_time != last_res_time:
+                            st.session_state.last_res_time = res_time
+                            fire_alerts(alerts)
+                            st.session_state.session_stats['frames_processed'] += 1
+                            st.session_state.session_stats['total_detections'] += len(dets)
+                            fps_ph.metric("FPS", fps_now)
+                            lat_ph.metric("ms",  lat_now)
+                            log_ph.markdown(render_log_html(st.session_state.alert_log), unsafe_allow_html=True)
+                            
+                        if show_debug_mask and dbg is not None:
+                            debug_ph.image(dbg, caption="CV Mask", channels="GRAY", use_container_width=True)
+
+                        if alerts:
+                            st.session_state.simulated_speed = max(5, st.session_state.simulated_speed-3)
                         else:
-                            dets, proc_frame, weather, dbg = detector.detect_hazards(
-                                frame, enhance=enable_night_mode,
-                                dashboard_mask_ratio=dashboard_mask_ratio,
-                                roi_start_ratio=roi_start
-                            )
-
-                    elapsed = time.time() - t0
-                    fps_now = int(frame_skip / elapsed) if elapsed > 0 else 30
-                    lat_now = int(elapsed * 1000)
-                    st.session_state.current_fps     = fps_now
-                    st.session_state.current_latency = lat_now
-                    st.session_state.weather_status  = weather.get('status','DAYLIGHT')
-                    st.session_state.session_stats['frames_processed'] += 1
-                    st.session_state.session_stats['total_detections'] += len(dets)
-
-                    proc_frame, alerts = draw_detections(proc_frame, dets, sensitivity)
-                    fire_alerts(alerts)
-
-                    feed_ph.image(proc_frame, channels="BGR", use_container_width=True)
-                    if show_debug_mask and dbg is not None:
-                        debug_ph.image(dbg, caption="CV Mask", channels="GRAY", use_container_width=True)
-
-                    fps_ph.metric("FPS", fps_now)
-                    lat_ph.metric("ms",  lat_now)
-                    log_ph.markdown(render_log_html(st.session_state.alert_log), unsafe_allow_html=True)
-
-                    if alerts:
-                        st.session_state.simulated_speed = max(5, st.session_state.simulated_speed-3)
-                    else:
-                        st.session_state.simulated_speed = min(80,st.session_state.simulated_speed+1)
-
+                            st.session_state.simulated_speed = min(80,st.session_state.simulated_speed+1)
+                            
+                    feed_ph.image(disp_frame, channels="BGR", use_container_width=True)
                     progress.progress(min(fidx/total_f,1.0), text=f"🔍 Frame {fidx}/{total_f}")
 
                 cap.release()
@@ -608,60 +704,64 @@ with tab1:
                 'warning_count':0,'frames_processed':0,'start_time':time.time()
             }
             cap = cv2.VideoCapture(0)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
             if not cap.isOpened():
                 st.error("❌ Camera not found. Check USB webcam connection.")
             else:
+                if 'inference_thread' not in st.session_state or not st.session_state.inference_thread.is_alive():
+                    st.session_state.latest_frame_in = None
+                    st.session_state.latest_result = None
+                    t = threading.Thread(target=inference_worker, daemon=True, name="RakshakAI_Inference")
+                    t.start()
+                    st.session_state.inference_thread = t
+
+                # ──── LIVE CAMERA LOOP ───────────────────────────────────────────────
                 while cap.isOpened() and not st.session_state.stop_detection:
                     ret, frame = cap.read()
                     if not ret: break
 
-                    t0 = time.time()
-                    if cloud_active:
-                        dets, proc_frame, weather, dbg = detect_via_cloud(
-                            frame, st.session_state.colab_url,
-                            sensitivity, enable_night_mode, dashboard_mask_ratio, roi_start
-                        )
-                        if dets is None:
-                            # Cloud fallback: still use frame-skip on CPU
-                            detector = st.session_state.detector
-                            if detector.skip_frame():
-                                dets, proc_frame, weather, dbg = detector.get_last_result(frame)
-                            else:
-                                dets, proc_frame, weather, dbg = detector.detect_hazards(
-                                    frame, enhance=enable_night_mode,
-                                    dashboard_mask_ratio=dashboard_mask_ratio,
-                                    roi_start_ratio=roi_start
-                                )
-                    else:
-                        # Local CPU mode: frame-skip every 3rd frame
-                        detector = st.session_state.detector
-                        if detector.skip_frame():
-                            dets, proc_frame, weather, dbg = detector.get_last_result(frame)
-                        else:
-                            dets, proc_frame, weather, dbg = detector.detect_hazards(
-                                frame, enhance=enable_night_mode,
-                                dashboard_mask_ratio=dashboard_mask_ratio,
-                                roi_start_ratio=roi_start
-                            )
-                    elapsed = time.time()-t0
-                    fps_now = int(1/elapsed) if elapsed>0 else 30
-                    lat_now = int(elapsed*1000)
-                    st.session_state.current_fps     = fps_now
-                    st.session_state.current_latency = lat_now
-                    st.session_state.weather_status  = weather.get('status','DAYLIGHT')
-                    st.session_state.session_stats['frames_processed'] += 1
-                    st.session_state.session_stats['total_detections'] += len(dets)
+                    # 1. Feed the AI thread
+                    if getattr(st.session_state, 'latest_frame_in', None) is None:
+                        st.session_state.latest_frame_in = (frame.copy(), enable_night_mode, dashboard_mask_ratio, roi_start)
 
-                    proc_frame, alerts = draw_detections(proc_frame, dets, sensitivity)
-                    fire_alerts(alerts)
-
-                    feed_ph.image(proc_frame, channels="BGR", use_container_width=True)
-                    if show_debug_mask and dbg is not None:
-                        debug_ph.image(dbg, caption="CV Mask", channels="GRAY", use_container_width=True)
-
-                    fps_ph.metric("FPS", fps_now)
-                    lat_ph.metric("ms",  lat_now)
-                    log_ph.markdown(render_log_html(st.session_state.alert_log), unsafe_allow_html=True)
+                    # 2. Get the latest AI result for drawing
+                    res = getattr(st.session_state, 'latest_result', None)
+                    
+                    disp_frame = frame.copy()
+                    
+                    if res is not None:
+                        dets = res['dets']
+                        weather = res['weather']
+                        dbg = res['dbg']
+                        elapsed = res['elapsed']
+                        res_time = res['res_time']
+                        
+                        fps_now = int(1/elapsed) if elapsed>0 else 30
+                        lat_now = int(elapsed*1000)
+                        
+                        st.session_state.current_fps = fps_now
+                        st.session_state.current_latency = lat_now
+                        st.session_state.weather_status = weather.get('status','DAYLIGHT')
+                        
+                        # Apply bounding boxes on the full-res disp_frame
+                        disp_frame, alerts = draw_detections(disp_frame, dets, sensitivity)
+                        
+                        # Only trigger alerts and stats metrics ONCE per unique AI result
+                        last_res_time = getattr(st.session_state, 'last_res_time', 0)
+                        if res_time != last_res_time:
+                            st.session_state.last_res_time = res_time
+                            fire_alerts(alerts)
+                            st.session_state.session_stats['frames_processed'] += 1
+                            st.session_state.session_stats['total_detections'] += len(dets)
+                            fps_ph.metric("FPS", fps_now)
+                            lat_ph.metric("ms",  lat_now)
+                            log_ph.markdown(render_log_html(st.session_state.alert_log), unsafe_allow_html=True)
+                            
+                        if show_debug_mask and dbg is not None:
+                            debug_ph.image(dbg, caption="CV Mask", channels="GRAY", use_container_width=True)
+                            
+                    feed_ph.image(disp_frame, channels="BGR", use_container_width=True)
 
                 cap.release()
                 st.session_state.is_detecting = False
@@ -752,186 +852,4 @@ with tab2:
         st.markdown('<div class="info-box" style="text-align:center;">Run a detection session to see alert history here.</div>', unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 · CLOUD SETUP GUIDE
-# ══════════════════════════════════════════════════════════════════════════════
-with tab3:
-    st.markdown("""
-    <h3 style="font-family:'Orbitron',sans-serif;font-size:1.1rem;color:#a78bfa;margin-bottom:4px;">
-        ☁️ Free Cloud GPU Processing
-    </h3>
-    <p style="color:#64748b;font-size:0.85rem;margin-bottom:20px;">
-        Run detection on a Google Colab T4 GPU (free) for 10× faster FPS without buying any hardware.
-    </p>
-    """, unsafe_allow_html=True)
 
-    c1, c2 = st.columns([1,1])
-    with c1:
-        st.markdown("""
-        <div class="cloud-panel">
-          <h4>🚀 SETUP STEPS</h4>
-          <div style="font-size:0.82rem;color:#94a3b8;line-height:2.2;">
-            <div><span style="color:#a78bfa;font-weight:700;">Step 1</span> &nbsp;Open <code>Rakshak_Cloud_Backend.ipynb</code> in Google Colab</div>
-            <div><span style="color:#a78bfa;font-weight:700;">Step 2</span> &nbsp;Set Runtime → <strong style="color:#e2e8f0;">T4 GPU</strong></div>
-            <div><span style="color:#a78bfa;font-weight:700;">Step 3</span> &nbsp;Run All Cells (Ctrl+F9)</div>
-            <div><span style="color:#a78bfa;font-weight:700;">Step 4</span> &nbsp;Copy the <strong style="color:#00d4ff;">ngrok URL</strong> from last cell output</div>
-            <div><span style="color:#a78bfa;font-weight:700;">Step 5</span> &nbsp;Paste URL into Sidebar → enable Cloud GPU toggle</div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("""
-        <div class="info-box">
-          <strong style="color:#e2e8f0;">💡 What you get:</strong><br>
-          ✅ NVIDIA T4 GPU (free via Google Colab)<br>
-          ✅ ~10–15 FPS on 1080p video (vs 2–4 FPS local CPU)<br>
-          ✅ Zero cloud cost (Colab free tier)<br>
-          ✅ Automatic fallback to local CPU if cloud disconnects<br>
-          ⚠️ Colab sessions expire after ~12 hours (just re-run)
-        </div>
-        """, unsafe_allow_html=True)
-
-    with c2:
-        st.markdown("""
-        <div class="cloud-panel">
-          <h4>📊 PERFORMANCE COMPARISON</h4>
-        </div>
-        """, unsafe_allow_html=True)
-
-        perf_data = {
-            'Mode':           ['Local CPU', 'Colab T4 GPU', 'Colab A100 (Pro)'],
-            'FPS (720p)':     [3,           18,              45],
-            'FPS (1080p)':    [1,           10,              28],
-            'Latency (ms)':   [800,         120,             45],
-            'Cost':           ['Free', 'Free', '~$10/mo Colab Pro'],
-        }
-        st.dataframe(pd.DataFrame(perf_data), use_container_width=True, hide_index=True)
-
-        st.markdown("""
-        <div class="info-box">
-          <strong style="color:#e2e8f0;">🔒 Privacy Note:</strong><br>
-          Frames are sent as JPEG (75% quality) to your own Colab session.
-          No data is stored permanently — Colab session is ephemeral.
-          For sensitive footage, always use Local CPU mode.
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown("""
-    <div class="panel-header" style="border-radius:8px;margin-bottom:12px;">
-        📄 &nbsp;Colab Backend Notebook Code (copy into Colab)
-    </div>
-    """, unsafe_allow_html=True)
-
-    colab_code = '''# ════════════════════════════════════════════════
-# RAKSHAK AI · Cloud GPU Backend for Google Colab
-# ════════════════════════════════════════════════
-# Runtime: T4 GPU (Runtime > Change Runtime Type > T4 GPU)
-
-# Cell 1: Install dependencies
-!pip install -q ultralytics flask flask-cors pyngrok pillow
-
-# Cell 2: Start the detection server
-import cv2, numpy as np, base64, os, threading
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from ultralytics import YOLO
-from PIL import Image
-import io
-
-app = Flask(__name__)
-CORS(app)
-
-print("⚡ Loading YOLOv8m model...")
-model = YOLO("yolov8m.pt")
-print("✅ Model loaded!")
-
-TARGET_CLASSES = ['person','bicycle','car','motorcycle','bus','train','truck','cow','dog']
-
-@app.route('/health')
-def health(): return jsonify({'status':'ok','gpu': True})
-
-@app.route('/detect', methods=['POST'])
-def detect():
-    data   = request.json
-    b64    = data['image']
-    sens   = float(data.get('sensitivity', 0.25))
-    enhance= bool(data.get('enhance', False))
-    dm_r   = float(data.get('dashboard_mask_ratio', 0.0))
-    roi_r  = float(data.get('roi_start_ratio', 0.6))
-
-    # Decode image
-    img_bytes = base64.b64decode(b64)
-    nparr   = np.frombuffer(img_bytes, np.uint8)
-    frame   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    orig_h, orig_w = frame.shape[:2]
-
-    # Resize for inference
-    proc = cv2.resize(frame, (640, int(orig_h * 640/orig_w)))
-    scale= 640 / orig_w
-
-    # Enhance
-    if enhance:
-        gray = cv2.cvtColor(proc, cv2.COLOR_BGR2GRAY)
-        night= np.mean(gray) < 80
-        lab  = cv2.cvtColor(proc, cv2.COLOR_BGR2LAB)
-        l,a,b= cv2.split(lab)
-        clahe= cv2.createCLAHE(3.5,(8,8))
-        proc = cv2.cvtColor(cv2.merge([clahe.apply(l),a,b]), cv2.COLOR_LAB2BGR)
-
-    results   = model(proc, conf=sens, verbose=False)[0]
-    gray_proc = cv2.cvtColor(proc, cv2.COLOR_BGR2GRAY)
-    avg_bright= float(np.mean(gray_proc))
-    weather   = {'status':'NIGHT' if avg_bright<80 else 'DAYLIGHT','is_night':avg_bright<80}
-
-    detections = []
-    for box in results.boxes:
-        cls  = int(box.cls[0]); conf = float(box.conf[0])
-        xyxy = (box.xyxy[0] / scale).tolist()
-        lbl  = model.names[cls]
-        if lbl not in TARGET_CLASSES: continue
-        h = xyxy[3]-xyxy[1]; w = xyxy[2]-xyxy[0]
-        if h<20 or w<20: continue
-        std_height = {'car':1.5,'truck':3.5,'bus':3.2,'person':1.7,'motorcycle':1.2}.get(lbl,1.5)
-        dist_m     = round((std_height * 700) / (h+1), 1)
-        cx         = (xyxy[0]+xyxy[2])/2
-        # Simple lane logic
-        if   cx < orig_w*0.35: lane="Left Lane"
-        elif cx < orig_w*0.65: lane="Ego Lane"
-        else:                   lane="Right Lane"
-        ttc = round(dist_m/15.0, 2)
-        # Severity
-        sev = 6 if lane=="Ego Lane" else 3
-        if ttc < 2.5 and lane=="Ego Lane": sev=10
-        if lbl in ['person','cow','dog'] and lane!='Left Shoulder': sev=max(sev,7)
-        detections.append({
-            'label':lbl,'confidence':conf,'box':xyxy,
-            'distance_m':dist_m,'lane':lane,'ttc':ttc,
-            'severity':min(10,sev),'pothole_level':0,'water_filled':False
-        })
-
-    return jsonify({'detections':detections,'weather':weather})
-
-# Cell 3: Launch with ngrok
-from pyngrok import ngrok
-ngrok.kill()
-tunnel = ngrok.connect(5000)
-print(f"\\n{'='*50}")
-print(f"✅ RAKSHAK AI CLOUD BACKEND RUNNING!")
-print(f"📋 Copy this URL into Rakshak AI sidebar:")
-print(f"   {tunnel.public_url}")
-print(f"{'='*50}\\n")
-
-# Run Flask (non-blocking)
-t = threading.Thread(target=lambda: app.run(host="0.0.0.0", port=5000, use_reloader=False))
-t.daemon = True
-t.start()
-print("🛡️ Backend ready. Keep this tab open!")
-'''
-    st.code(colab_code, language='python')
-    st.markdown("""
-    <div class="info-box">
-        💡 <strong style="color:#e2e8f0;">Tip:</strong> Save this as <code>Rakshak_Cloud_Backend.ipynb</code>
-        and upload to your Google Drive for easy access. The backend handles all YOLO inference
-        on the GPU — your local machine only needs to stream video frames.
-    </div>""", unsafe_allow_html=True)

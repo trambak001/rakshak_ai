@@ -15,6 +15,7 @@ import numpy as np
 from ultralytics import YOLO
 import time
 import os
+import math
 
 # ── OpenVINO optional import ──────────────────────────────────────────────────
 try:
@@ -24,9 +25,13 @@ except ImportError:
     OPENVINO_AVAILABLE = False
 
 # ── Model paths priority list ─────────────────────────────────────────────────
-OPENVINO_MODEL_PATH = 'models/rakshak_openvino/best.xml'   # Preferred: 3x CPU speed
-PYTORCH_MODEL_PATH  = 'models/rakshak_best.pt'             # Fallback 1: custom trained
-NANO_MODEL_PATH     = 'yolov8n.pt'                          # Fallback 2: YOLOv8 Nano
+# OpenVINO: point to the DIRECTORY exported by `model.export(format='openvino')`.
+# Ultralytics YOLO natively loads the whole directory with task='detect'.
+# This is the recommended approach — no need for raw openvino.runtime.Core.
+OPENVINO_MODEL_DIR  = 'models/rakshak_openvino'          # ← directory, not .xml
+OPENVINO_MODEL_XML  = 'models/rakshak_openvino/best.xml'  # ← fallback raw path
+PYTORCH_MODEL_PATH  = 'models/rakshak_best.pt'            # Fallback 1: custom .pt
+NANO_MODEL_PATH     = 'yolov8m.pt'                        # Fallback 2: stock Medium
 
 
 class HazardDetector:
@@ -43,10 +48,11 @@ class HazardDetector:
           3. yolov8n.pt         — stock Nano model (fallback)
           4. caller-supplied path
         """
-        self.use_openvino = False
-        self.ov_compiled   = None   # OpenVINO compiled model
-        self.ov_input_name = None
-        self.model         = None   # YOLO / PyTorch model
+        self.use_openvino        = False   # True = raw OVCore path (ov_compiled set)
+        self.use_openvino_native  = False   # True = Ultralytics-native OpenVINO dir load
+        self.ov_compiled          = None    # Only used by _load_openvino_raw / _run_openvino
+        self.ov_input_name        = None
+        self.model                = None    # YOLO / PyTorch / Ultralytics-OpenVINO model
 
         # ── Frame-skip state ──────────────────────────────────────────────────
         # Every 3rd frame is processed; others return the last result.
@@ -89,50 +95,134 @@ class HazardDetector:
         # Static object filtering (ignore things stuck in one place = dashboard artifacts)
         self.history  = {}
         self.next_id  = 0
+        
+        # Cross-frame tracking for Smart Mute / Traffic Mode logic
+        self.object_tracks = {}
+        self.next_track_id = 0
 
     # ── Model Loading ─────────────────────────────────────────────────────────
 
     def _auto_load_model(self):
-        """Auto-detect and load the best available model."""
-        if OPENVINO_AVAILABLE and os.path.exists(OPENVINO_MODEL_PATH):
-            self._load_openvino(OPENVINO_MODEL_PATH)
+        """Auto-detect and load the best available model.
+
+        Priority:
+          1. models/rakshak_openvino/best.xml via openvino.runtime.Core
+             — fastest on Intel CPU (requires: pip install openvino)
+          2. models/rakshak_best.pt  — custom-trained YOLOv8n PyTorch
+          3. yolov8n.pt              — stock Nano (auto-download)
+        """
+        if OPENVINO_AVAILABLE and os.path.exists(OPENVINO_MODEL_XML):
+            # ── PRIMARY: Raw openvino.runtime.Core ─────────────────────────────
+            # YOLO() rejects .xml in newer Ultralytics builds; OVCore is reliable.
+            self._load_openvino_raw(OPENVINO_MODEL_XML)
+            # Also load a YOLO model for class names if OVCore succeeded
+            if self.use_openvino and self.model is None:
+                try:
+                    self.model = YOLO(NANO_MODEL_PATH if os.path.exists(NANO_MODEL_PATH) else 'yolov8n.pt')
+                except Exception:
+                    pass   # class names won't resolve — falls back to f"class{id}"
         elif os.path.exists(PYTORCH_MODEL_PATH):
             self._load_pytorch(PYTORCH_MODEL_PATH)
             print("✅ Using custom-trained model: models/rakshak_best.pt")
         elif os.path.exists(NANO_MODEL_PATH):
             self._load_pytorch(NANO_MODEL_PATH)
-            print("✅ Using YOLOv8n (Nano) — optimized for Intel i3 CPU")
+            print("✅ Using YOLOv8m (Medium) — optimized for Intel CPU")
         else:
-            # Last resort: download Nano on-demand
-            self._load_pytorch('yolov8n.pt')
-            print("⚡ Downloading YOLOv8n (Nano) model — this runs on CPU without a GPU")
+            self._load_pytorch('yolov8m.pt')
+            print("⚡ Downloading YOLOv8m (Medium) — CPU-only, no GPU required")
 
-    def _load_openvino(self, xml_path):
-        """Load OpenVINO IR model for maximum CPU throughput."""
+    def _load_openvino_native(self, model_xml_path):
+        """
+        Load OpenVINO model via Ultralytics YOLO engine.
+
+        IMPORTANT: Ultralytics YOLO() needs the .xml FILE path, NOT the directory.
+          Correct:   YOLO('models/rakshak_openvino/best.xml', task='detect')
+          Wrong:     YOLO('models/rakshak_openvino/', task='detect')  ← TypeError
+
+        self.model is a standard Ultralytics YOLO object — inference via _run_yolo().
+        self.ov_compiled is NOT used here.
+        """
+        try:
+            self.model              = YOLO(model_xml_path, task='detect')
+            # Warm up once to force AutoBackend to load the OpenVINO runtime
+            import numpy as np
+            dummy = np.zeros((320, 320, 3), dtype=np.uint8)
+            self.model(dummy, verbose=False)   # triggers actual OpenVINO compile
+            self.use_openvino_native = True    # route to _run_yolo (Ultralytics handles OV)
+            self.use_openvino        = False   # ov_compiled is NOT set in this path
+            print(f"🚀 OpenVINO model loaded (Ultralytics native): {model_xml_path}")
+            print("   Intel CPU optimizations active — ~3x faster than PyTorch .pt")
+        except Exception as e:
+            print(f"⚠️  OpenVINO native load failed ({e}).")
+            self.use_openvino_native = False
+            self.use_openvino        = False
+            self.model               = None
+            # Try raw OVCore next
+            if OPENVINO_AVAILABLE and os.path.exists(model_xml_path):
+                print("   Falling back to raw openvino.runtime.Core ...")
+                try:
+                    self._load_openvino_raw(model_xml_path)
+                    return
+                except Exception as e2:
+                    print(f"   Raw OVCore also failed ({e2}). Falling back to PyTorch.")
+            fallback = PYTORCH_MODEL_PATH if os.path.exists(PYTORCH_MODEL_PATH) else NANO_MODEL_PATH
+            self._load_pytorch(fallback)
+
+
+    def _load_openvino_raw(self, xml_path):
+        """Load OpenVINO IR via raw openvino.runtime.Core.
+        ov_compiled IS set here.  detect_hazards routes to _run_openvino().
+        """
         try:
             ie = OVCore()
             net = ie.read_model(xml_path)
-            self.ov_compiled   = ie.compile_model(net, device_name='CPU')
-            self.ov_input_name = self.ov_compiled.input(0).any_name
-            self.use_openvino  = True
-            print(f"🚀 OpenVINO model loaded: {xml_path}")
-            print("   Intel CPU optimizations active (~3x faster inference)")
+            self.ov_compiled         = ie.compile_model(net, device_name='CPU')
+            self.ov_input_name       = self.ov_compiled.input(0).any_name
+            self.use_openvino        = True   # route to _run_openvino (ov_compiled used)
+            self.use_openvino_native = False
+            print(f"🚀 OpenVINO model loaded (raw Core): {xml_path}")
         except Exception as e:
-            print(f"⚠️  OpenVINO load failed ({e}). Falling back to PyTorch.")
-            self.use_openvino = False
+            print(f"⚠️  OpenVINO raw load failed ({e}). Falling back to PyTorch.")
+            self.use_openvino        = False
+            self.use_openvino_native = False
             self._load_pytorch(PYTORCH_MODEL_PATH if os.path.exists(PYTORCH_MODEL_PATH) else NANO_MODEL_PATH)
+
+    # Keep old name as alias for backward compat
+    def _load_openvino(self, path):
+        """Alias: route to native or raw loader based on path type."""
+        if path.endswith('.xml'):
+            self._load_openvino_native(path)    # pass .xml directly to YOLO()
+        elif os.path.isdir(path):
+            # If given a directory, look for .xml inside it
+            xml = os.path.join(path, 'best.xml')
+            if os.path.exists(xml):
+                self._load_openvino_native(xml)
+            else:
+                self._load_pytorch(PYTORCH_MODEL_PATH if os.path.exists(PYTORCH_MODEL_PATH) else NANO_MODEL_PATH)
+        else:
+            self._load_openvino_native(path)
+
+    def _load_model(self, path):
+        """Load model from an explicit caller-supplied path."""
+        if path.endswith('.xml') and os.path.exists(path):
+            self._load_openvino_native(path)
+        elif os.path.isdir(path):
+            # Directory → look for .xml inside
+            xml = os.path.join(path, 'best.xml')
+            if os.path.exists(xml):
+                self._load_openvino_native(xml)
+            else:
+                self._load_pytorch(path)   # might be a PyTorch saved model dir
+        else:
+            self._load_pytorch(path)
 
     def _load_pytorch(self, model_path):
         """Load standard YOLO / PyTorch model."""
         self.model = YOLO(model_path)
         self.use_openvino = False
+        print(f"✅ Loaded PyTorch model: {model_path}")
 
-    def _load_model(self, path):
-        """Load model from an explicit caller-supplied path."""
-        if path.endswith('.xml') and OPENVINO_AVAILABLE:
-            self._load_openvino(path)
-        else:
-            self._load_pytorch(path)
+
 
     # ── Frame-Skip Helper ─────────────────────────────────────────────────────
 
@@ -439,7 +529,7 @@ class HazardDetector:
         Run YOLO inference on a pre-processed (already-resized) frame.
         Returns raw ultralytics Results object.
         """
-        return self.model(proc_frame, verbose=False)[0]
+        return self.model.track(proc_frame, persist=True, tracker="botsort.yaml", verbose=False)[0]
 
     def _run_openvino(self, proc_frame, orig_h, orig_w):
         """
@@ -617,8 +707,8 @@ class HazardDetector:
         detections = []
         raw_scale  = orig_w / self.infer_size   # used to scale boxes → original res
 
-        if self.use_openvino:
-            # OpenVINO inference path
+        if self.use_openvino and self.ov_compiled is not None:
+            # ── Raw OVCore path: ov_compiled is set by _load_openvino_raw() ────────
             ov_dets = self._run_openvino(proc_frame, orig_h, orig_w)
             for d in ov_dets:
                 cls_id = d['cls']
@@ -639,6 +729,50 @@ class HazardDetector:
                 if h < 20 or w < 20:
                     continue
 
+                box_cy = (xyxy[1] + xyxy[3]) / 2.0
+                
+                # Dynamic Horizon Filter: Target ground objects only
+                is_pothole_label = label in ['pothole', 'water-pothole', 'crack', 'drainage', 'bump']
+                if is_pothole_label and box_cy < (orig_h * 0.60):
+                    continue
+
+                is_water_filled = False
+                if is_pothole_label and w >= 10 and h >= 10:
+                    x1, y1, x2, y2 = map(int, xyxy)
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(orig_w, x2), min(orig_h, y2)
+                    crop_bgr = frame[y1:y2, x1:x2]
+                    if crop_bgr.size > 0:
+                        crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+                        dark_thresh = cv2.adaptiveThreshold(crop_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 15)
+                        hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+                        _, bright_mask = cv2.threshold(hsv[:,:,2], 140, 255, cv2.THRESH_BINARY)
+                        _, low_sat_mask = cv2.threshold(hsv[:,:,1], 70, 255, cv2.THRESH_BINARY_INV)
+                        water_mask = cv2.bitwise_and(bright_mask, low_sat_mask)
+                        
+                        blurred = cv2.GaussianBlur(crop_gray, (5, 5), 0)
+                        sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+                        sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
+                        gradient_mag = np.sqrt(sobelx**2 + sobely**2)
+                        max_val = gradient_mag.max()
+                        edge_thresh = np.uint8(gradient_mag / max_val * 255) if max_val > 0 else np.zeros_like(crop_gray)
+                        _, edge_thresh = cv2.threshold(edge_thresh, 50, 255, cv2.THRESH_BINARY)
+
+                        roi_f = crop_gray.astype(np.float32)
+                        mean = cv2.blur(roi_f, (15, 15))
+                        mean_sq = cv2.blur(roi_f**2, (15, 15))
+                        variance = mean_sq - mean**2
+                        max_var = variance.max()
+                        variance = np.uint8(variance / max_var * 255) if max_var > 0 else np.zeros_like(crop_gray)
+                        _, texture_mask = cv2.threshold(variance, 80, 255, cv2.THRESH_BINARY_INV)
+
+                        water_pothole_candidate = cv2.bitwise_and(water_mask, texture_mask)
+                        water_pothole_candidate = cv2.bitwise_and(water_pothole_candidate, edge_thresh)
+                        combined_mask = cv2.bitwise_or(dark_thresh, water_pothole_candidate)
+                        
+                        water_percentage = np.sum(water_mask > 0) / (w * h)
+                        is_water_filled = bool(water_percentage > 0.3)
+
                 obj_std_h = self.standards.get(label, self.standards['car'])['height']
                 dist_m    = (obj_std_h * 700) / (h + 1)
                 detections.append({
@@ -648,9 +782,15 @@ class HazardDetector:
                     'area':           w * h,
                     'distance_m':     round(dist_m, 1),
                     'distance_index': 1000 / (h + 1),
+                    'water_filled':   is_water_filled,
                 })
+
         else:
-            # PyTorch / YOLO inference path
+            # ── Ultralytics path: covers ──────────────────────────────────────
+            #   a) Native OpenVINO dir load  (use_openvino_native=True, ov_compiled=None)
+            #      Ultralytics runs OpenVINO internally via self.model()
+            #   b) Standard PyTorch .pt load (use_openvino=False)
+            # Both cases return an Ultralytics Results object from _run_yolo()
             results = self._run_yolo(proc_frame)
             for box in results.boxes:
                 cls   = int(box.cls[0])
@@ -675,6 +815,48 @@ class HazardDetector:
                 if h < 20 or w < 20:
                     continue
 
+                # Dynamic Horizon Filter: Target ground objects only
+                is_pothole_label = label in ['pothole', 'water-pothole', 'crack', 'drainage', 'bump']
+                if is_pothole_label and box_cy < (orig_h * 0.60):
+                    continue
+
+                is_water_filled = False
+                if is_pothole_label and w >= 10 and h >= 10:
+                    x1, y1, x2, y2 = map(int, xyxy)
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(orig_w, x2), min(orig_h, y2)
+                    crop_bgr = frame[y1:y2, x1:x2]
+                    if crop_bgr.size > 0:
+                        crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+                        dark_thresh = cv2.adaptiveThreshold(crop_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 15)
+                        hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+                        _, bright_mask = cv2.threshold(hsv[:,:,2], 140, 255, cv2.THRESH_BINARY)
+                        _, low_sat_mask = cv2.threshold(hsv[:,:,1], 70, 255, cv2.THRESH_BINARY_INV)
+                        water_mask = cv2.bitwise_and(bright_mask, low_sat_mask)
+                        
+                        blurred = cv2.GaussianBlur(crop_gray, (5, 5), 0)
+                        sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+                        sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
+                        gradient_mag = np.sqrt(sobelx**2 + sobely**2)
+                        max_val = gradient_mag.max()
+                        edge_thresh = np.uint8(gradient_mag / max_val * 255) if max_val > 0 else np.zeros_like(crop_gray)
+                        _, edge_thresh = cv2.threshold(edge_thresh, 50, 255, cv2.THRESH_BINARY)
+
+                        roi_f = crop_gray.astype(np.float32)
+                        mean = cv2.blur(roi_f, (15, 15))
+                        mean_sq = cv2.blur(roi_f**2, (15, 15))
+                        variance = mean_sq - mean**2
+                        max_var = variance.max()
+                        variance = np.uint8(variance / max_var * 255) if max_var > 0 else np.zeros_like(crop_gray)
+                        _, texture_mask = cv2.threshold(variance, 80, 255, cv2.THRESH_BINARY_INV)
+
+                        water_pothole_candidate = cv2.bitwise_and(water_mask, texture_mask)
+                        water_pothole_candidate = cv2.bitwise_and(water_pothole_candidate, edge_thresh)
+                        combined_mask = cv2.bitwise_or(dark_thresh, water_pothole_candidate)
+                        
+                        water_percentage = np.sum(water_mask > 0) / (w * h)
+                        is_water_filled = bool(water_percentage > 0.3)
+
                 obj_std_h = self.standards.get(label, self.standards['car'])['height']
                 dist_m    = (obj_std_h * 700) / (h + 1)
                 detections.append({
@@ -684,6 +866,7 @@ class HazardDetector:
                     'area':           w * h,
                     'distance_m':     round(dist_m, 1),
                     'distance_index': 1000 / (h + 1),
+                    'water_filled':   is_water_filled,
                 })
 
         detections = self.merge_train_cars(detections)
@@ -703,71 +886,139 @@ class HazardDetector:
         # Scale debug mask back to display resolution
         debug_mask = cv2.resize(debug_mask_small, (orig_w, orig_h))
 
-        # ── Step 5: Lane detection ────────────────────────────────────────────
-        l_x, r_x = self.detect_active_lanes(proc_frame)
 
-        lane_left_x  = orig_w * 0.35
-        lane_right_x = orig_w * 0.65
+        # ── Step 5 & 6: Geometric Lane, Distance, TTC, and Severity Logic ───────
+        lane_w = orig_w / 3.0
+        frame_area = orig_w * orig_h
 
-        if l_x is not None or r_x is not None:
-            inferred_width = orig_w * 0.45
-            cur_lx = l_x * raw_scale if l_x is not None else None
-            cur_rx = r_x * raw_scale if r_x is not None else None
+        # Attempt to get speed from session state if available, else default to 15m/s (54km/h)
+        speed_m_s = 15.0
+        try:
+            import streamlit as st
+            if 'simulated_speed' in st.session_state and st.session_state.simulated_speed > 0:
+                speed_m_s = st.session_state.simulated_speed / 3.6
+        except Exception:
+            pass
 
-            if cur_lx is not None and cur_rx is not None:
-                lane_left_x, lane_right_x = cur_lx, cur_rx
-            elif cur_lx is not None:
-                lane_left_x  = cur_lx
-                lane_right_x = cur_lx + inferred_width
-            elif cur_rx is not None:
-                lane_right_x = cur_rx
-                lane_left_x  = cur_rx - inferred_width
+        # Update object tracks for Smart Mute / Traffic Mode logic
+        current_tracks = {}
+        for d in detections:
+            box = d['box']
+            label = d.get('label', '')
+            box_area = (box[2] - box[0]) * (box[3] - box[1])
+            ymax = box[3]
+            
+            # IoU matching with previous tracks
+            matched_id = None
+            max_iou = 0
+            for tid, tdata in self.object_tracks.items():
+                tbox = tdata['box']
+                if tdata['label'] != label: continue
+                
+                xA = max(box[0], tbox[0]); yA = max(box[1], tbox[1])
+                xB = min(box[2], tbox[2]); yB = min(box[3], tbox[3])
+                interArea = max(0, xB-xA) * max(0, yB-yA)
+                tbox_area = (tbox[2]-tbox[0]) * (tbox[3]-tbox[1])
+                iou = interArea / float(box_area + tbox_area - interArea) if (box_area + tbox_area - interArea) > 0 else 0
+                
+                if iou > 0.45 and iou > max_iou:
+                    matched_id = tid
+                    max_iou = iou
+            
+            if matched_id is not None:
+                prev_area = self.object_tracks[matched_id]['area']
+                prev_ymax = self.object_tracks[matched_id]['ymax']
+                expansion_rate = box_area / prev_area if prev_area > 0 else 1.0
+                ymax_shift = ymax - prev_ymax
+                current_tracks[matched_id] = {
+                    'box': box, 'label': label, 'area': box_area, 'ymax': ymax,
+                    'expansion_rate': expansion_rate, 'ymax_shift': ymax_shift
+                }
+                d['expansion_rate'] = expansion_rate
+                d['ymax_shift'] = ymax_shift
+            else:
+                tid = self.next_track_id
+                self.next_track_id += 1
+                current_tracks[tid] = {
+                    'box': box, 'label': label, 'area': box_area, 'ymax': ymax,
+                    'expansion_rate': 1.0, 'ymax_shift': 0.0
+                }
+                d['expansion_rate'] = 1.0
+                d['ymax_shift'] = 0.0
+                
+        self.object_tracks = current_tracks
 
-            lane_left_x  = max(0,       min(lane_left_x,  orig_w * 0.45))
-            lane_right_x = min(orig_w,  max(lane_right_x, orig_w * 0.55))
-
-        # ── Step 6: Per-detection classification ─────────────────────────────
-        shoulder_buffer = orig_w * 0.15
         for d in detections:
             box      = d['box']
-            center_x = (box[0] + box[2]) / 2
+            center_x = (box[0] + box[2]) / 2.0
+            
+            # Smart Distance & TTC based on Area
+            w = box[2] - box[0]
+            h = box[3] - box[1]
+            box_area = w * h
+            
+            # Approximate distance (m) based on area proportion to frame
+            area_ratio = box_area / frame_area
+            # Clamped inverse relationship: larger box = closer 
+            dist_m = max(1.0, 1000.0 / (math.sqrt(box_area) + 1.0)) if box_area > 0 else 50.0
+            
+            ttc = dist_m / speed_m_s
+            
+            d['distance_m'] = round(dist_m, 1)
+            d['ttc'] = round(ttc, 2)
 
-            if   center_x < (lane_left_x - shoulder_buffer):
-                d['lane'], d['lane_id'] = 'Left Shoulder', 0
-            elif center_x < lane_left_x:
-                d['lane'], d['lane_id'] = 'Left Lane',     1
-            elif center_x < lane_right_x:
-                d['lane'], d['lane_id'] = 'Ego Lane',      2
-            elif center_x < (lane_right_x + shoulder_buffer):
-                d['lane'], d['lane_id'] = 'Right Lane',    3
+            # Strict 3-Zone Lane Splitting
+            if center_x < lane_w:
+                d['lane'], d['lane_id'] = 'Left Side', 1
+            elif center_x > (2 * lane_w):
+                d['lane'], d['lane_id'] = 'Right Side', 3
             else:
-                d['lane'], d['lane_id'] = 'Right Shoulder', 4
+                d['lane'], d['lane_id'] = 'My Lane', 2
 
-            dist_m = d.get('distance_m')
-            if dist_m is None:
-                dist_m = 1000 / ((box[3] - box[1]) + 1) * 0.5
-                d['distance_m'] = round(dist_m, 1)
+            # Dynamic Severity Prioritization (1-10)
+            label = d.get('label', '')
+            severity = 1
+            
+            if d['lane_id'] == 2: # My Lane
+                # Base severity maps closer distance to higher severity securely inside My Lane
+                severity = max(6, int(11 - dist_m))
+                
+                # Boost if TTC < 2.5s
+                if ttc < 2.5:
+                    severity = max(severity, 9) # or 10
+                    
+                # ── Selective Hazard Suppression (Smart Mute / Traffic Mode) ──
+                expansion_rate = d.get('expansion_rate', 1.0)
+                ymax_shift = d.get('ymax_shift', 0.0)
+                
+                if label in ['car', 'truck', 'bus', 'auto-rickshaw']:
+                    # Traffic logic: Constant speed following means area doesn't change much
+                    if 0.95 <= expansion_rate <= 1.05 and dist_m > 3.0:
+                        severity = max(2, severity - 5)  # Suppress alarm
+                        
+                    # Fallback Y-Coordinate Shift Override
+                    # Fast descending ymax towards ego hood
+                    if ymax_shift > 5.0 and dist_m < 10.0:
+                        severity = max(severity, 8) 
+                        
+                # Absolute Overrides for Vulnerables / Static hazards
+                # NEVER suppress these!
+                if label in ['pothole', 'water-pothole', 'cow', 'dog', 'person']:
+                    severity = 10
+            else: # Left or Right Side
+                # Max out at 5 for Left/Right sides as per instructions
+                severity = min(5, int(8 - dist_m))
+                
+            # Absolute Pothole Override anywhere if water filled
+            if label == 'pothole' and d.get('water_filled', False):
+                severity = 10
 
-            d['ttc'] = round(dist_m / 15.0, 2)
+            # Soft Sign Override for minor road anomalies
+            if label in ['bump', 'crack', 'drainage']:
+                severity = min(severity, 4)
 
-            # Severity (0–10)
-            severity = 0
-            if d['lane_id'] == 2:
-                severity = 6
-                if d['ttc'] < 2.5:
-                    severity += 4
-            elif d['lane_id'] in [1, 3]:
-                severity = 3
-                if d['ttc'] < 1.0:
-                    severity += 2
-            else:
-                severity = 1
+            d['severity'] = min(10, max(1, severity)) # Clamp 1-10
 
-            is_living = d['label'] in ['person', 'cow', 'dog', 'bicycle', 'auto-rickshaw']
-            if is_living:
-                severity = max(severity, 7) if d['lane_id'] in [1, 2, 3] else 2
-
-            d['severity'] = min(10, severity)
 
         # ── Step 7: Upscale proc_frame back for display ───────────────────────
         output_frame = cv2.resize(proc_frame, (orig_w, orig_h))

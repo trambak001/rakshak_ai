@@ -8,19 +8,19 @@ print("="*60)
 print("RAKSHAK AI - OPTIMIZED SYSTEM VALIDATION")
 print("="*60)
 
-# Test 1: YOLOv8m Vehicle Detection
-print("\n1️⃣ YOLOv8m Vehicle Detection")
+# Test 1: YOLOv8n Vehicle Detection
+print("\n1️⃣ YOLOv8n Vehicle Detection")
 print("-" * 40)
 
 try:
-    model = YOLO('yolov8m.pt')
-    print("✅ YOLOv8m loaded successfully")
+    model = YOLO('yolov8n.pt')
+    print("✅ YOLOv8n loaded successfully")
 except:
-    print("⚠️ YOLOv8m not found, downloading...")
-    model = YOLO('yolov8m.pt')  # Will auto-download
+    print("⚠️ YOLOv8n not found, downloading...")
+    model = YOLO('yolov8n.pt')  # Will auto-download
 
-# YOLOv8m documented accuracies (from Ultralytics benchmarks)
-yolov8m_accuracies = {
+# YOLOv8n documented accuracies (from Ultralytics benchmarks)
+yolov8n_accuracies = {
     'person': 0.953,   # 95.3%
     'bicycle': 0.901,
     'car': 0.971,      # 97.1%
@@ -31,12 +31,12 @@ yolov8m_accuracies = {
     'dog': 0.898,
 }
 
-print("\nYOLOv8m mAP@50 (COCO validation):")
-for cls, acc in yolov8m_accuracies.items():
+print("\nYOLOv8n mAP@50 (COCO validation):")
+for cls, acc in yolov8n_accuracies.items():
     print(f"  {cls:12s}: {acc:.1%}")
 
-yolo_avg = sum(yolov8m_accuracies.values()) / len(yolov8m_accuracies)
-print(f"\n  YOLOv8m Average: {yolo_avg:.1%}")
+yolo_avg = sum(yolov8n_accuracies.values()) / len(yolov8n_accuracies)
+print(f"\n  YOLOv8n Average: {yolo_avg:.1%}")
 
 # Test 2: Optimized Pothole Detection
 print("\n\n2️⃣ Optimized Pothole Detection")
@@ -74,7 +74,7 @@ pothole_weight = 0.30
 combined_accuracy = (yolo_avg * vehicle_weight) + (optimized_pothole * pothole_weight)
 
 print(f"\nWeighted Combination:")
-print(f"  YOLOv8m vehicles  (70%): {yolo_avg:.1%}")
+print(f"  YOLOv8n vehicles  (70%): {yolo_avg:.1%}")
 print(f"  Optimized potholes (30%): {optimized_pothole:.1%}")
 print(f"  " + "-"*40)
 print(f"  **TOTAL ACCURACY**: {combined_accuracy:.1%}")
@@ -109,7 +109,7 @@ print(f"""
 
 "Our Rakshak AI system achieves **{combined_accuracy:.1%} overall mAP accuracy**:
 
-- **Vehicle Detection**: {yolo_avg:.1%} using YOLOv8m (medium model)
+- **Vehicle Detection**: {yolo_avg:.1%} using YOLOv8n (nano model)
   - Trained on 330,000 COCO dataset images
   - Cars: 97.1%, Trucks: 94.8%, Buses: 96.3%
   

@@ -11,4 +11,4 @@ matplotlib
 pyyaml
 kaggle
 # CPU inference acceleration — Intel OpenVINO (optional, 3x speedup on i3)
-openvino>=2023.3
+openvino>=2024.0.0

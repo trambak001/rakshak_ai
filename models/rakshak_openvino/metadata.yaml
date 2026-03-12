@@ -1,0 +1,33 @@
+description: Ultralytics best model trained on /content/rakshak.yaml
+author: Ultralytics
+date: '2026-03-10T08:34:37.876243'
+version: 8.4.21
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+batch: 1
+imgsz:
+- 320
+- 320
+names:
+  0: pothole
+  1: water-pothole
+  2: car
+  3: truck
+  4: bus
+  5: auto-rickshaw
+  6: person
+  7: cow
+  8: motorcycle
+  9: drainage
+  10: crack
+args:
+  batch: 1
+  fraction: 1.0
+  half: false
+  int8: false
+  dynamic: false
+  nms: false
+channels: 3
+end2end: false

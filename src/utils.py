@@ -151,7 +151,7 @@ class AlertManager:
 
         hazard_type    : Label string (e.g. 'person', 'Pothole L2', 'cow')
         is_water_filled: True if this is a water-filled pothole
-        lane           : Lane string (e.g. 'Ego Lane', 'Left Lane')
+        lane           : Lane string (e.g. 'My Lane', 'Left Side')
         """
         lane_info = lane if lane else "your path"
 
