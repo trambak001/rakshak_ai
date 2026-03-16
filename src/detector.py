@@ -299,8 +299,8 @@ class HazardDetector:
         v_channel = roi[:, :, 2]
         s_channel = roi[:, :, 1]
 
-        _, bright_mask  = cv2.threshold(v_channel, 140, 255, cv2.THRESH_BINARY)
-        _, low_sat_mask = cv2.threshold(s_channel, 70,  255, cv2.THRESH_BINARY_INV)
+        _, bright_mask  = cv2.threshold(v_channel, 160, 255, cv2.THRESH_BINARY)
+        _, low_sat_mask = cv2.threshold(s_channel, 45,  255, cv2.THRESH_BINARY_INV)
         water_mask = cv2.bitwise_and(bright_mask, low_sat_mask)
         return water_mask, roi_bgr
 
@@ -407,13 +407,15 @@ class HazardDetector:
 
         contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        road_hazards = []
+        road_hazards_candidates = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if not (400 < area < 7000):
+            if not (600 < area < 5500):
                 continue
 
             x, y, w, h = cv2.boundingRect(cnt)
+            if h < 8:
+                continue
             real_y = y + y_start
 
             aspect_ratio = float(w) / (h + 1e-5)
@@ -423,12 +425,17 @@ class HazardDetector:
             hull      = cv2.convexHull(cnt)
             hull_area = cv2.contourArea(hull)
             solidity  = float(area) / hull_area if hull_area > 0 else 0
-            if solidity < 0.55:
+            if solidity < 0.65:
                 continue
 
             roi_section   = roi_gray[y:y+h, x:x+w]
             avg_intensity = np.mean(roi_section)
             max_intensity = np.max(roi_section)
+            
+            # --- White Paint Rejection Filter ---
+            _, white_mask = cv2.threshold(roi_section, 200, 255, cv2.THRESH_BINARY)
+            if white_mask.size > 0 and (cv2.countNonZero(white_mask) / float(white_mask.size)) > 0.25:
+                continue # Discard detection (road paint/glare, NOT a pothole)
 
             if area < 1000 and max_intensity > 240:
                 continue
@@ -437,7 +444,7 @@ class HazardDetector:
 
             water_section    = water_mask[y:y+h, x:x+w]
             water_percentage = (np.sum(water_section > 0) / (w * h)) if (w * h) > 0 else 0
-            is_water_filled  = water_percentage > 0.3
+            is_water_filled  = water_percentage > 0.45
 
             if avg_intensity > 180 and not is_water_filled:
                 continue
@@ -501,18 +508,41 @@ class HazardDetector:
                 self.history[self.next_id] = {'box': current_box, 'static_count': 0}
                 self.next_id += 1
                 if len(self.history) > 50:
-                    self.history = {}
+                    keys_to_remove = list(self.history.keys())[:25]
+                    for k in keys_to_remove:
+                        del self.history[k]
 
-            road_hazards.append({
+            dist_m = max(1.0, (0.4 * 700) / (h + 1))
+            road_hazards_candidates.append({
                 'label':        label,
                 'confidence':   confidence,
                 'box':          [x, real_y, x+w, real_y+h],
                 'area':         area,
+                'distance_m':   round(dist_m, 1),
                 'distance_index': 1000 / (h + 1),
                 'water_filled': is_water_filled,
                 'pothole_level': level,
                 'pothole_desc': desc,
             })
+
+        # Apply Non-Maximum Suppression to overlapping pothole bounding boxes
+        road_hazards_candidates.sort(key=lambda x: x['confidence'], reverse=True)
+        road_hazards = []
+        for i, cand in enumerate(road_hazards_candidates):
+            keep = True
+            for kept in road_hazards:
+                b1, b2 = cand['box'], kept['box']
+                xA = max(b1[0], b2[0]); yA = max(b1[1], b2[1])
+                xB = min(b1[2], b2[2]); yB = min(b1[3], b2[3])
+                interArea = max(0, xB-xA) * max(0, yB-yA)
+                b1Area = (b1[2]-b1[0]) * (b1[3]-b1[1])
+                b2Area = (b2[2]-b2[0]) * (b2[3]-b2[1])
+                iou = interArea / float(b1Area + b2Area - interArea) if (b1Area + b2Area - interArea) > 0 else 0
+                if iou > 0.4:
+                    keep = False
+                    break
+            if keep:
+                road_hazards.append(cand)
 
         # Build full-size debug mask
         full_debug_mask = np.zeros((height, width), dtype=np.uint8)
@@ -678,7 +708,7 @@ class HazardDetector:
 
     # ── Main detect_hazards ───────────────────────────────────────────────────
 
-    def detect_hazards(self, frame, enhance=False, dashboard_mask_ratio=0.0, roi_start_ratio=0.6):
+    def detect_hazards(self, frame, conf_thresh=0.25, enhance=False, dashboard_mask_ratio=0.0, roi_start_ratio=0.6):
         """
         Full detection pipeline.
 
@@ -705,15 +735,21 @@ class HazardDetector:
 
         # ── Step 3: Object detection ──────────────────────────────────────────
         detections = []
-        raw_scale  = orig_w / self.infer_size   # used to scale boxes → original res
+        scale_x = orig_w / self.infer_size
+        scale_y = orig_h / self.infer_size
 
         if self.use_openvino and self.ov_compiled is not None:
             # ── Raw OVCore path: ov_compiled is set by _load_openvino_raw() ────────
             ov_dets = self._run_openvino(proc_frame, orig_h, orig_w)
             for d in ov_dets:
                 cls_id = d['cls']
-                conf   = d['conf']
                 xyxy   = d['xyxy']
+                if conf < conf_thresh:
+                    continue
+                xyxy[0] *= scale_x
+                xyxy[1] *= scale_y
+                xyxy[2] *= scale_x
+                xyxy[3] *= scale_y
 
                 # Resolve class name from loaded YOLO model names or generic COCO names
                 try:
@@ -744,6 +780,12 @@ class HazardDetector:
                     crop_bgr = frame[y1:y2, x1:x2]
                     if crop_bgr.size > 0:
                         crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+                        
+                        # --- White Paint Rejection Filter ---
+                        _, white_mask = cv2.threshold(crop_gray, 200, 255, cv2.THRESH_BINARY)
+                        if (cv2.countNonZero(white_mask) / float(white_mask.size)) > 0.25:
+                            continue # Discard detection: it's road paint/glare, not a pothole
+
                         dark_thresh = cv2.adaptiveThreshold(crop_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 15)
                         hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
                         _, bright_mask = cv2.threshold(hsv[:,:,2], 140, 255, cv2.THRESH_BINARY)
@@ -771,7 +813,7 @@ class HazardDetector:
                         combined_mask = cv2.bitwise_or(dark_thresh, water_pothole_candidate)
                         
                         water_percentage = np.sum(water_mask > 0) / (w * h)
-                        is_water_filled = bool(water_percentage > 0.3)
+                        is_water_filled = bool(water_percentage > 0.45)
 
                 obj_std_h = self.standards.get(label, self.standards['car'])['height']
                 dist_m    = (obj_std_h * 700) / (h + 1)
@@ -795,7 +837,9 @@ class HazardDetector:
             for box in results.boxes:
                 cls   = int(box.cls[0])
                 conf  = float(box.conf[0])
-                xyxy  = (box.xyxy[0] * raw_scale).tolist()
+                if conf < conf_thresh:
+                    continue
+                xyxy  = [box.xyxy[0][0].item() * scale_x, box.xyxy[0][1].item() * scale_y, box.xyxy[0][2].item() * scale_x, box.xyxy[0][3].item() * scale_y]
                 label = self.model.names[cls]
 
                 box_cy  = (xyxy[1] + xyxy[3]) / 2
@@ -828,6 +872,12 @@ class HazardDetector:
                     crop_bgr = frame[y1:y2, x1:x2]
                     if crop_bgr.size > 0:
                         crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+                        
+                        # --- White Paint Rejection Filter ---
+                        _, white_mask = cv2.threshold(crop_gray, 200, 255, cv2.THRESH_BINARY)
+                        if (cv2.countNonZero(white_mask) / float(white_mask.size)) > 0.25:
+                            continue # Discard detection: it's road paint/glare, not a pothole
+
                         dark_thresh = cv2.adaptiveThreshold(crop_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 15)
                         hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
                         _, bright_mask = cv2.threshold(hsv[:,:,2], 140, 255, cv2.THRESH_BINARY)
@@ -855,7 +905,7 @@ class HazardDetector:
                         combined_mask = cv2.bitwise_or(dark_thresh, water_pothole_candidate)
                         
                         water_percentage = np.sum(water_mask > 0) / (w * h)
-                        is_water_filled = bool(water_percentage > 0.3)
+                        is_water_filled = bool(water_percentage > 0.45)
 
                 obj_std_h = self.standards.get(label, self.standards['car'])['height']
                 dist_m    = (obj_std_h * 700) / (h + 1)
@@ -880,7 +930,7 @@ class HazardDetector:
 
         for rh in road_hazards:
             # Scale pothole boxes from inference res back to display res
-            rh['box'] = [b * raw_scale for b in rh['box']]
+            rh['box'] = [rh['box'][0]*scale_x, rh['box'][1]*scale_y, rh['box'][2]*scale_x, rh['box'][3]*scale_y]
             detections.append(rh)
 
         # Scale debug mask back to display resolution
@@ -930,21 +980,24 @@ class HazardDetector:
                 prev_ymax = self.object_tracks[matched_id]['ymax']
                 expansion_rate = box_area / prev_area if prev_area > 0 else 1.0
                 ymax_shift = ymax - prev_ymax
+                frames_seen = self.object_tracks[matched_id].get('frames_seen', 1) + 1
                 current_tracks[matched_id] = {
                     'box': box, 'label': label, 'area': box_area, 'ymax': ymax,
-                    'expansion_rate': expansion_rate, 'ymax_shift': ymax_shift
+                    'expansion_rate': expansion_rate, 'ymax_shift': ymax_shift, 'frames_seen': frames_seen
                 }
                 d['expansion_rate'] = expansion_rate
                 d['ymax_shift'] = ymax_shift
+                d['frames_seen'] = frames_seen
             else:
                 tid = self.next_track_id
                 self.next_track_id += 1
                 current_tracks[tid] = {
                     'box': box, 'label': label, 'area': box_area, 'ymax': ymax,
-                    'expansion_rate': 1.0, 'ymax_shift': 0.0
+                    'expansion_rate': 1.0, 'ymax_shift': 0.0, 'frames_seen': 1
                 }
                 d['expansion_rate'] = 1.0
                 d['ymax_shift'] = 0.0
+                d['frames_seen'] = 1
                 
         self.object_tracks = current_tracks
 
@@ -956,32 +1009,42 @@ class HazardDetector:
             w = box[2] - box[0]
             h = box[3] - box[1]
             box_area = w * h
+            # Distance Formula
+            dist_m = d.get('distance_m', 50.0) # Use the pinhole dist assigned earlier
+            # If it's a pothole, we probably don't have a reliable height to begin with from pinhole, but road_hazards assigns distance_index.
+            # We will use the pinhole dist mapped previously.
             
-            # Approximate distance (m) based on area proportion to frame
-            area_ratio = box_area / frame_area
-            # Clamped inverse relationship: larger box = closer 
-            dist_m = max(1.0, 1000.0 / (math.sqrt(box_area) + 1.0)) if box_area > 0 else 50.0
-            
-            ttc = dist_m / speed_m_s
+            ttc = dist_m / speed_m_s if speed_m_s > 0 else 99.9
             
             d['distance_m'] = round(dist_m, 1)
             d['ttc'] = round(ttc, 2)
 
-            # Strict 3-Zone Lane Splitting
-            if center_x < lane_w:
-                d['lane'], d['lane_id'] = 'Left Side', 1
-            elif center_x > (2 * lane_w):
-                d['lane'], d['lane_id'] = 'Right Side', 3
-            else:
+            box_y_ratio = (box[1] + box[3]) / 2.0 / orig_h 
+            perspective_factor = 0.5 + 0.5 * box_y_ratio
+            center_band_half = lane_w * perspective_factor
+            frame_center = orig_w / 2.0
+            if abs(center_x - frame_center) < center_band_half:
                 d['lane'], d['lane_id'] = 'My Lane', 2
+            elif center_x < frame_center:
+                d['lane'], d['lane_id'] = 'Left Side', 1
+            else:
+                d['lane'], d['lane_id'] = 'Right Side', 3
 
             # Dynamic Severity Prioritization (1-10)
             label = d.get('label', '')
             severity = 1
             
             if d['lane_id'] == 2: # My Lane
-                # Base severity maps closer distance to higher severity securely inside My Lane
-                severity = max(6, int(11 - dist_m))
+                if dist_m <= 3.0:
+                    severity = 10
+                elif dist_m <= 6.0:
+                    severity = 8
+                elif dist_m <= 12.0:
+                    severity = 6
+                elif dist_m <= 20.0:
+                    severity = 4
+                else:
+                    severity = 2
                 
                 # Boost if TTC < 2.5s
                 if ttc < 2.5:
@@ -993,7 +1056,7 @@ class HazardDetector:
                 
                 if label in ['car', 'truck', 'bus', 'auto-rickshaw']:
                     # Traffic logic: Constant speed following means area doesn't change much
-                    if 0.95 <= expansion_rate <= 1.05 and dist_m > 3.0:
+                    if 0.95 <= expansion_rate <= 1.05 and dist_m > 3.0 and d.get('frames_seen', 1) >= 3:
                         severity = max(2, severity - 5)  # Suppress alarm
                         
                     # Fallback Y-Coordinate Shift Override
@@ -1003,18 +1066,21 @@ class HazardDetector:
                         
                 # Absolute Overrides for Vulnerables / Static hazards
                 # NEVER suppress these!
-                if label in ['pothole', 'water-pothole', 'cow', 'dog', 'person']:
+                lbl_l = label.lower()
+                is_vul = lbl_l in ['cow', 'dog', 'person'] or 'pothole' in lbl_l or 'water' in lbl_l or 'pit' in lbl_l
+                if is_vul:
                     severity = 10
             else: # Left or Right Side
                 # Max out at 5 for Left/Right sides as per instructions
                 severity = min(5, int(8 - dist_m))
                 
             # Absolute Pothole Override anywhere if water filled
-            if label == 'pothole' and d.get('water_filled', False):
+            if 'pothole' in label.lower() and d.get('water_filled', False):
                 severity = 10
 
             # Soft Sign Override for minor road anomalies
-            if label in ['bump', 'crack', 'drainage']:
+            lbl_l = label.lower()
+            if 'bump' in lbl_l or 'breaker' in lbl_l or 'crack' in lbl_l or 'drain' in lbl_l:
                 severity = min(severity, 4)
 
             d['severity'] = min(10, max(1, severity)) # Clamp 1-10

@@ -57,25 +57,29 @@ class AlertManager:
 
     # ── TTS engine (lazy, per-thread) ─────────────────────────────────────────
 
+    _thread_local = threading.local()
+
     def _get_tts_engine(self):
         """
         Create a pyttsx3 engine instance.
         pyttsx3 is NOT thread-safe when sharing a single instance, so we
-        create a fresh engine per speech thread call.
+        cache a single engine instance per thread.
         """
         if not PYTTSX3_AVAILABLE:
             return None
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty('rate', 150)   # Words per minute
-            # Prefer a slightly lower pitch for clarity
-            voices = engine.getProperty('voices')
-            if voices:
-                engine.setProperty('voice', voices[0].id)
-            return engine
-        except Exception as e:
-            print(f"⚠️  TTS engine init failed: {e}")
-            return None
+        if not hasattr(self._thread_local, 'engine') or self._thread_local.engine is None:
+            try:
+                engine = pyttsx3.init()
+                engine.setProperty('rate', 150)   # Words per minute
+                # Prefer a slightly lower pitch for clarity
+                voices = engine.getProperty('voices')
+                if voices:
+                    engine.setProperty('voice', voices[0].id)
+                self._thread_local.engine = engine
+            except Exception as e:
+                print(f"⚠️  TTS engine init failed: {e}")
+                self._thread_local.engine = None
+        return self._thread_local.engine
 
     # ── Beep ─────────────────────────────────────────────────────────────────
 
@@ -131,7 +135,6 @@ class AlertManager:
                 if engine:
                     engine.say(text)
                     engine.runAndWait()
-                    engine.stop()
             except Exception as e:
                 print(f"[TTS error] {e}")
             finally:

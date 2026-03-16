@@ -283,13 +283,12 @@ def inference_worker():
             # We don't want to choke the CPU, sleep briefly if no new frame
             input_data = getattr(st.session_state, 'latest_frame_in', None)
             if input_data is not None:
-                frame, en_nm, dmr, rsr = input_data
+                frame, en_nm, dmr, rsr, sens = input_data
                 t0 = time.time()
                 
-                det_input = cv2.resize(frame, (320, 320))
                 detector = st.session_state.detector
                 dets, proc_frame, weather, dbg = detector.detect_hazards(
-                    det_input, enhance=en_nm, 
+                    frame, conf_thresh=sens, enhance=en_nm, 
                     dashboard_mask_ratio=dmr, roi_start_ratio=rsr
                 )
                 
@@ -333,7 +332,7 @@ with st.sidebar:
     camera_mode = st.radio("Camera Position",
                            ["🚗 Driver View (Behind Wheel)", "🪟 Windshield Mount"])
     if "Driver View" in camera_mode:
-        roi_start_default, dash_mask_default = 0.35, 40
+        roi_start_default, dash_mask_default = 0.35, 15
     else:
         roi_start_default, dash_mask_default = 0.60, 0
 
@@ -588,6 +587,8 @@ with tab1:
             with open("temp_video.mp4","wb") as f: f.write(uploaded.read())
             cap = cv2.VideoCapture("temp_video.mp4")
             total_f = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+            vid_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            frame_delay = 1.0 / vid_fps
 
             b1, b2 = st.columns(2)
             run_btn  = b1.button("▶  START DETECTION", use_container_width=True)
@@ -613,6 +614,8 @@ with tab1:
                     st.session_state.latest_frame_in = None
                     st.session_state.latest_result = None
                     t = threading.Thread(target=inference_worker, daemon=True, name="RakshakAI_Inference")
+                    from streamlit.runtime.scriptrunner import add_script_run_ctx
+                    add_script_run_ctx(t)
                     t.start()
                     st.session_state.inference_thread = t
 
@@ -620,13 +623,14 @@ with tab1:
                 fidx       = 0
 
                 while cap.isOpened() and not st.session_state.stop_detection:
+                    loop_t0 = time.time()
                     ret, frame = cap.read()
                     if not ret: break
                     fidx += 1
 
                     # 1. Feed the AI thread
                     if getattr(st.session_state, 'latest_frame_in', None) is None:
-                        st.session_state.latest_frame_in = (frame.copy(), enable_night_mode, dashboard_mask_ratio, roi_start)
+                        st.session_state.latest_frame_in = (frame.copy(), enable_night_mode, dashboard_mask_ratio, roi_start, sensitivity)
 
                     # 2. Get the latest AI result for drawing
                     res = getattr(st.session_state, 'latest_result', None)
@@ -671,6 +675,12 @@ with tab1:
                             
                     feed_ph.image(disp_frame, channels="BGR", use_container_width=True)
                     progress.progress(min(fidx/total_f,1.0), text=f"🔍 Frame {fidx}/{total_f}")
+                    
+                    # Pace video to original FPS so background thread has time to read
+                    loop_elapsed = time.time() - loop_t0
+                    sleep_t = max(0, frame_delay - loop_elapsed)
+                    if sleep_t > 0:
+                        time.sleep(sleep_t)
 
                 cap.release()
                 st.session_state.is_detecting = False
@@ -713,6 +723,8 @@ with tab1:
                     st.session_state.latest_frame_in = None
                     st.session_state.latest_result = None
                     t = threading.Thread(target=inference_worker, daemon=True, name="RakshakAI_Inference")
+                    from streamlit.runtime.scriptrunner import add_script_run_ctx
+                    add_script_run_ctx(t)
                     t.start()
                     st.session_state.inference_thread = t
 
@@ -723,7 +735,7 @@ with tab1:
 
                     # 1. Feed the AI thread
                     if getattr(st.session_state, 'latest_frame_in', None) is None:
-                        st.session_state.latest_frame_in = (frame.copy(), enable_night_mode, dashboard_mask_ratio, roi_start)
+                        st.session_state.latest_frame_in = (frame.copy(), enable_night_mode, dashboard_mask_ratio, roi_start, sensitivity)
 
                     # 2. Get the latest AI result for drawing
                     res = getattr(st.session_state, 'latest_result', None)
