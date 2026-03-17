@@ -1,7 +1,0 @@
-Object Class,Precision,Recall,mAP@50
-Cow,0.94,0.91,0.93
-Pothole,0.88,0.82,0.86
-Person,0.96,0.93,0.95
-Auto-Rickshaw,0.91,0.89,0.9
-Car,0.98,0.95,0.97
-Open Drainage,0.85,0.79,0.83

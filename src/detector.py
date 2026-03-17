@@ -743,13 +743,11 @@ class HazardDetector:
             ov_dets = self._run_openvino(proc_frame, orig_h, orig_w)
             for d in ov_dets:
                 cls_id = d['cls']
+                conf   = d['conf']
                 xyxy   = d['xyxy']
+                
                 if conf < conf_thresh:
                     continue
-                xyxy[0] *= scale_x
-                xyxy[1] *= scale_y
-                xyxy[2] *= scale_x
-                xyxy[3] *= scale_y
 
                 # Resolve class name from loaded YOLO model names or generic COCO names
                 try:
