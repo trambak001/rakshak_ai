@@ -271,29 +271,29 @@ init_state()
 
 # ── ASYNC INFERENCE WORKER ──────────────────────────────────────────────────
 def inference_worker():
-    """Background daemon thread for AI inference. 
+    """Background daemon thread for AI inference.
     Grabs the latest frame from st.session_state.latest_frame_in,
     runs the heavy detector, and posts to st.session_state.latest_result."""
-    import time
-    import cv2
-    import streamlit as st
-    
     while not getattr(st.session_state, 'stop_detection', False):
         try:
-            # We don't want to choke the CPU, sleep briefly if no new frame
+            # Sleep briefly if no new frame is ready to avoid busy-waiting
             input_data = getattr(st.session_state, 'latest_frame_in', None)
             if input_data is not None:
-                frame, en_nm, dmr, rsr, sens = input_data
+                frame, enable_night_mode, dashboard_mask_ratio, roi_start_ratio, conf_thresh, speed_kmh = input_data
                 t0 = time.time()
-                
+
                 detector = st.session_state.detector
                 dets, proc_frame, weather, dbg = detector.detect_hazards(
-                    frame, conf_thresh=sens, enhance=en_nm, 
-                    dashboard_mask_ratio=dmr, roi_start_ratio=rsr
+                    frame,
+                    conf_thresh=conf_thresh,
+                    enhance=enable_night_mode,
+                    dashboard_mask_ratio=dashboard_mask_ratio,
+                    roi_start_ratio=roi_start_ratio,
+                    speed_kmh=speed_kmh,
                 )
-                
+
                 elapsed = time.time() - t0
-                
+
                 # We assign a timestamp to know when a NEW result arrived
                 st.session_state.latest_result = {
                     'dets': dets,
@@ -303,12 +303,13 @@ def inference_worker():
                     'elapsed': elapsed,
                     'res_time': time.time()
                 }
-                
+
                 # Done with this frame
                 st.session_state.latest_frame_in = None
             else:
-                time.sleep(0.01) # 10ms rest
-        except Exception as e:
+                time.sleep(0.01)  # 10 ms rest
+        except Exception as exc:
+            print(f"[inference_worker] error: {exc}", flush=True)
             time.sleep(0.1)
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
@@ -395,11 +396,11 @@ def draw_detections(frame, detections, sensitivity_thresh):
         x2,y2 = min(w_fr-1,x2), min(h_fr-1,y2)
 
         # Corner bracket style
-        cs, lw = 12, 2
-        cv2.line(frame,(x1,y1),(x1+cs,y1),color,lw); cv2.line(frame,(x1,y1),(x1,y1+cs),color,lw)
-        cv2.line(frame,(x2,y1),(x2-cs,y1),color,lw); cv2.line(frame,(x2,y1),(x2,y1+cs),color,lw)
-        cv2.line(frame,(x1,y2),(x1+cs,y2),color,lw); cv2.line(frame,(x1,y2),(x1,y2-cs),color,lw)
-        cv2.line(frame,(x2,y2),(x2-cs,y2),color,lw); cv2.line(frame,(x2,y2),(x2,y2-cs),color,lw)
+        corner_size, line_width = 12, 2
+        cv2.line(frame,(x1,y1),(x1+corner_size,y1),color,line_width); cv2.line(frame,(x1,y1),(x1,y1+corner_size),color,line_width)
+        cv2.line(frame,(x2,y1),(x2-corner_size,y1),color,line_width); cv2.line(frame,(x2,y1),(x2,y1+corner_size),color,line_width)
+        cv2.line(frame,(x1,y2),(x1+corner_size,y2),color,line_width); cv2.line(frame,(x1,y2),(x1,y2-corner_size),color,line_width)
+        cv2.line(frame,(x2,y2),(x2-corner_size,y2),color,line_width); cv2.line(frame,(x2,y2),(x2,y2-corner_size),color,line_width)
 
         # Label text
         if pl > 0:
@@ -513,45 +514,45 @@ def render_log_html(log, limit=10):
 
 # ─── HEADER ──────────────────────────────────────────────────────────────────
 is_live = st.session_state.is_detecting
-bc  = "status-live" if is_live else "status-standby"
-dc  = "dot-live"    if is_live else "dot-standby"
-bt  = "LIVE DETECTION" if is_live else "STANDBY"
-spd = st.session_state.simulated_speed if is_live else random.randint(0,3)
-wic = "🌙" if st.session_state.weather_status == "NIGHT" else "☀️"
-engine_tag = "💻 Local CPU"
+status_badge_class = "status-live" if is_live else "status-standby"
+dot_class          = "dot-live"    if is_live else "dot-standby"
+badge_text         = "LIVE DETECTION" if is_live else "STANDBY"
+display_speed      = st.session_state.simulated_speed if is_live else random.randint(0, 3)
+weather_icon       = "🌙" if st.session_state.weather_status == "NIGHT" else "☀️"
+engine_tag         = "💻 Local CPU"
 
-h1, h2 = st.columns([3,1])
-with h1:
+header_col, speed_col = st.columns([3, 1])
+with header_col:
     st.markdown(f"""
     <h1 class="header-title">RAKSHAK AI</h1>
     <p class="header-sub">Advanced Driver Assistance System · Collision Intelligence</p>
     """, unsafe_allow_html=True)
-with h2:
+with speed_col:
     st.markdown(f"""
     <div style="text-align:right;padding-top:6px;">
-      <div class="status-badge {bc}"><div class="status-dot {dc}"></div>{bt}</div>
+      <div class="status-badge {status_badge_class}"><div class="status-dot {dot_class}"></div>{badge_text}</div>
       <div style="margin-top:10px;font-family:'Orbitron',sans-serif;font-size:2.2rem;
            font-weight:900;color:#00f0ff;line-height:1;text-align:right;">
-        {spd}<span style="font-size:0.75rem;color:#64748b;"> km/h</span>
+        {display_speed}<span style="font-size:0.75rem;color:#64748b;"> km/h</span>
       </div>
       <div style="font-size:0.62rem;color:#94a3b8;text-align:right;letter-spacing:1px; margin-top:5px;">
-        {wic} {st.session_state.weather_status} &nbsp;·&nbsp; {engine_tag}
+        {weather_icon} {st.session_state.weather_status} &nbsp;·&nbsp; {engine_tag}
       </div>
     </div>""", unsafe_allow_html=True)
 
 # ─── HUD ROW ─────────────────────────────────────────────────────────────────
-s = st.session_state.session_stats
+session_stats = st.session_state.session_stats
 fps_v, lat_v = st.session_state.current_fps, st.session_state.current_latency
 
-c1, c2, c3 = st.columns(3)
-with c1:
+status_col, weather_col, perf_col = st.columns(3)
+with status_col:
     stat_msg = "🟢 SYSTEMS OPTIMAL" if fps_v > 0 else "⚫ STANDBY"
-    if s['critical_count'] > 0: stat_msg = "🔴 HAZARD DETECTED"
-    elif s['warning_count'] > 0: stat_msg = "🟡 CAUTION"
-    st.metric("System Status", stat_msg, f"{s['frames_processed']} frames")
-with c2:
+    if session_stats['critical_count'] > 0: stat_msg = "🔴 HAZARD DETECTED"
+    elif session_stats['warning_count'] > 0: stat_msg = "🟡 CAUTION"
+    st.metric("System Status", stat_msg, f"{session_stats['frames_processed']} frames")
+with weather_col:
     st.metric("Current Weather", st.session_state.weather_status, "Visibility OK")
-with c3:
+with perf_col:
     st.metric("Processing Engine", "FPS: " + str(fps_v if fps_v else '—'), f"{lat_v if lat_v else '—'} ms latency", delta_color="inverse")
 
 # ─── MAIN TABS ────────────────────────────────────────────────────────────────
@@ -590,9 +591,9 @@ with tab1:
             vid_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             frame_delay = 1.0 / vid_fps
 
-            b1, b2 = st.columns(2)
-            run_btn  = b1.button("▶  START DETECTION", use_container_width=True)
-            stop_btn = b2.button("⏹  STOP", use_container_width=True, key="sv")
+            start_col, stop_col = st.columns(2)
+            run_btn  = start_col.button("▶  START DETECTION", use_container_width=True)
+            stop_btn = stop_col.button("⏹  STOP", use_container_width=True, key="sv")
 
             if stop_btn:
                 st.session_state.is_detecting  = False
@@ -620,17 +621,18 @@ with tab1:
                     st.session_state.inference_thread = t
 
                 progress = st.progress(0, text="🔍 Analyzing…")
-                fidx       = 0
+                frame_index = 0
 
                 while cap.isOpened() and not st.session_state.stop_detection:
                     loop_t0 = time.time()
                     ret, frame = cap.read()
                     if not ret: break
-                    fidx += 1
+                    frame_index += 1
 
                     # 1. Feed the AI thread
                     if getattr(st.session_state, 'latest_frame_in', None) is None:
-                        st.session_state.latest_frame_in = (frame.copy(), enable_night_mode, dashboard_mask_ratio, roi_start, sensitivity)
+                        current_speed_kmh = st.session_state.simulated_speed
+                        st.session_state.latest_frame_in = (frame.copy(), enable_night_mode, dashboard_mask_ratio, roi_start, sensitivity, current_speed_kmh)
 
                     # 2. Get the latest AI result for drawing
                     res = getattr(st.session_state, 'latest_result', None)
@@ -674,7 +676,7 @@ with tab1:
                             st.session_state.simulated_speed = min(80,st.session_state.simulated_speed+1)
                             
                     feed_ph.image(disp_frame, channels="BGR", use_container_width=True)
-                    progress.progress(min(fidx/total_f,1.0), text=f"🔍 Frame {fidx}/{total_f}")
+                    progress.progress(min(frame_index/total_f,1.0), text=f"🔍 Frame {frame_index}/{total_f}")
                     
                     # Pace video to original FPS so background thread has time to read
                     loop_elapsed = time.time() - loop_t0
@@ -694,9 +696,9 @@ with tab1:
             For best results, mount the camera on the windshield pointing at the road.
         </div>""", unsafe_allow_html=True)
 
-        b1, b2 = st.columns(2)
-        start_btn = b1.button("▶  START FEED",  use_container_width=True)
-        stop_btn  = b2.button("⏹  STOP FEED",   use_container_width=True)
+        start_col, stop_col = st.columns(2)
+        start_btn = start_col.button("▶  START FEED",  use_container_width=True)
+        stop_btn  = stop_col.button("⏹  STOP FEED",   use_container_width=True)
 
         if stop_btn:
             st.session_state.is_detecting   = False
@@ -735,7 +737,8 @@ with tab1:
 
                     # 1. Feed the AI thread
                     if getattr(st.session_state, 'latest_frame_in', None) is None:
-                        st.session_state.latest_frame_in = (frame.copy(), enable_night_mode, dashboard_mask_ratio, roi_start, sensitivity)
+                        current_speed_kmh = st.session_state.simulated_speed
+                        st.session_state.latest_frame_in = (frame.copy(), enable_night_mode, dashboard_mask_ratio, roi_start, sensitivity, current_speed_kmh)
 
                     # 2. Get the latest AI result for drawing
                     res = getattr(st.session_state, 'latest_result', None)
@@ -783,11 +786,11 @@ with tab1:
 # TAB 2 · ANALYTICS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab2:
-    a1,a2,a3,a4 = st.columns(4)
-    a1.metric("Total Detections", s['total_detections'])
-    a2.metric("Critical Alerts",  s['critical_count'])
-    a3.metric("Warnings",         s['warning_count'])
-    a4.metric("Frames Processed", s['frames_processed'])
+    det_col, crit_col, warn_col, frames_col = st.columns(4)
+    det_col.metric("Total Detections",  session_stats['total_detections'])
+    crit_col.metric("Critical Alerts",  session_stats['critical_count'])
+    warn_col.metric("Warnings",         session_stats['warning_count'])
+    frames_col.metric("Frames Processed", session_stats['frames_processed'])
 
     st.markdown("---")
     left, right = st.columns(2)
