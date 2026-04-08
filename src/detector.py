@@ -100,6 +100,79 @@ class HazardDetector:
         self.object_tracks = {}
         self.next_track_id = 0
 
+    # ── Shared geometric helper ───────────────────────────────────────────────
+
+    @staticmethod
+    def _compute_iou(box1, box2):
+        """Return Intersection-over-Union for two [x1,y1,x2,y2] boxes."""
+        inter_x1 = max(box1[0], box2[0])
+        inter_y1 = max(box1[1], box2[1])
+        inter_x2 = min(box1[2], box2[2])
+        inter_y2 = min(box1[3], box2[3])
+        inter_area = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
+        area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        denom = float(area1 + area2 - inter_area)
+        return inter_area / denom if denom > 0 else 0.0
+
+    # ── Shared pothole-crop water-fill analysis ───────────────────────────────
+
+    def _check_water_fill(self, crop_bgr, crop_gray, crop_w, crop_h):
+        """
+        Analyse a cropped pothole region and return True if it appears
+        water-filled.  Also returns True if the crop looks like road
+        paint / glare (white-pixel ratio > 25%), in which case the
+        caller should discard the detection entirely — indicated by the
+        second return value ``is_road_paint``.
+
+        Returns:
+            (is_water_filled: bool, is_road_paint: bool)
+        """
+        # White paint / glare rejection
+        _, white_mask = cv2.threshold(crop_gray, 200, 255, cv2.THRESH_BINARY)
+        if (cv2.countNonZero(white_mask) / float(white_mask.size)) > 0.25:
+            return False, True   # road paint — caller should skip detection
+
+        # Dark adaptive threshold (dry potholes)
+        dark_thresh = cv2.adaptiveThreshold(
+            crop_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV, 51, 15,
+        )
+
+        # HSV water mask (bright + low-saturation pixels)
+        hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+        _, bright_mask   = cv2.threshold(hsv[:, :, 2], 140, 255, cv2.THRESH_BINARY)
+        _, low_sat_mask  = cv2.threshold(hsv[:, :, 1],  70, 255, cv2.THRESH_BINARY_INV)
+        water_mask = cv2.bitwise_and(bright_mask, low_sat_mask)
+
+        # Edge gradient mask
+        blurred       = cv2.GaussianBlur(crop_gray, (5, 5), 0)
+        sobelx        = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+        sobely        = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
+        gradient_mag  = cv2.magnitude(sobelx, sobely)
+        max_val       = gradient_mag.max()
+        if max_val > 0:
+            gradient_norm = np.uint8(gradient_mag / max_val * 255)
+        else:
+            gradient_norm = np.zeros_like(crop_gray)
+        _, edge_mask = cv2.threshold(gradient_norm, 50, 255, cv2.THRESH_BINARY)
+
+        # Texture variance mask (water = low local variance)
+        roi_f      = crop_gray.astype(np.float32)
+        mean_f     = cv2.blur(roi_f, (15, 15))
+        mean_sq_f  = cv2.blur(roi_f ** 2, (15, 15))
+        variance   = mean_sq_f - mean_f ** 2
+        max_var    = variance.max()
+        if max_var > 0:
+            variance_norm = np.uint8(variance / max_var * 255)
+        else:
+            variance_norm = np.zeros_like(crop_gray)
+        _, texture_mask = cv2.threshold(variance_norm, 80, 255, cv2.THRESH_BINARY_INV)
+
+        crop_area        = crop_w * crop_h
+        water_percentage = np.sum(water_mask > 0) / crop_area if crop_area > 0 else 0.0
+        return bool(water_percentage > 0.45), False
+
     # ── Model Loading ─────────────────────────────────────────────────────────
 
     def _auto_load_model(self):
@@ -145,7 +218,6 @@ class HazardDetector:
         try:
             self.model              = YOLO(model_xml_path, task='detect')
             # Warm up once to force AutoBackend to load the OpenVINO runtime
-            import numpy as np
             dummy = np.zeros((320, 320, 3), dtype=np.uint8)
             self.model(dummy, verbose=False)   # triggers actual OpenVINO compile
             self.use_openvino_native = True    # route to _run_yolo (Ultralytics handles OV)
@@ -174,9 +246,9 @@ class HazardDetector:
         ov_compiled IS set here.  detect_hazards routes to _run_openvino().
         """
         try:
-            ie = OVCore()
-            net = ie.read_model(xml_path)
-            self.ov_compiled         = ie.compile_model(net, device_name='CPU')
+            ov_core = OVCore()
+            ov_model = ov_core.read_model(xml_path)
+            self.ov_compiled         = ov_core.compile_model(ov_model, device_name='CPU')
             self.ov_input_name       = self.ov_compiled.input(0).any_name
             self.use_openvino        = True   # route to _run_openvino (ov_compiled used)
             self.use_openvino_native = False
@@ -309,7 +381,7 @@ class HazardDetector:
         blurred = cv2.GaussianBlur(roi_gray, (5, 5), 0)
         sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
         sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
-        gradient_mag = np.sqrt(sobelx**2 + sobely**2)
+        gradient_mag = cv2.magnitude(sobelx, sobely)
         max_val = gradient_mag.max()
         if max_val == 0:
             return np.zeros_like(roi_gray, dtype=np.uint8)
@@ -485,11 +557,9 @@ class HazardDetector:
             matched_id  = None
             for hid, data in self.history.items():
                 hx, hy, hw, hh = data['box']
-                xA = max(x, hx);  yA = max(real_y, hy)
-                xB = min(x+w, hx+hw); yB = min(real_y+h, hy+hh)
-                interArea = max(0, xB-xA) * max(0, yB-yA)
-                boxArea   = w * h;  histArea = hw * hh
-                iou       = interArea / float(boxArea + histArea - interArea) if (boxArea + histArea - interArea) > 0 else 0
+                hist_box = [hx, hy, hx + hw, hy + hh]
+                det_box  = [x, real_y, x + w, real_y + h]
+                iou = self._compute_iou(det_box, hist_box)
                 if iou > 0.6:
                     matched_id = hid
                     break
@@ -531,14 +601,7 @@ class HazardDetector:
         for i, cand in enumerate(road_hazards_candidates):
             keep = True
             for kept in road_hazards:
-                b1, b2 = cand['box'], kept['box']
-                xA = max(b1[0], b2[0]); yA = max(b1[1], b2[1])
-                xB = min(b1[2], b2[2]); yB = min(b1[3], b2[3])
-                interArea = max(0, xB-xA) * max(0, yB-yA)
-                b1Area = (b1[2]-b1[0]) * (b1[3]-b1[1])
-                b2Area = (b2[2]-b2[0]) * (b2[3]-b2[1])
-                iou = interArea / float(b1Area + b2Area - interArea) if (b1Area + b2Area - interArea) > 0 else 0
-                if iou > 0.4:
+                if self._compute_iou(cand['box'], kept['box']) > 0.4:
                     keep = False
                     break
             if keep:
@@ -708,7 +771,7 @@ class HazardDetector:
 
     # ── Main detect_hazards ───────────────────────────────────────────────────
 
-    def detect_hazards(self, frame, conf_thresh=0.25, enhance=False, dashboard_mask_ratio=0.0, roi_start_ratio=0.6):
+    def detect_hazards(self, frame, conf_thresh=0.25, enhance=False, dashboard_mask_ratio=0.0, roi_start_ratio=0.6, speed_kmh=0):
         """
         Full detection pipeline.
 
@@ -778,40 +841,11 @@ class HazardDetector:
                     crop_bgr = frame[y1:y2, x1:x2]
                     if crop_bgr.size > 0:
                         crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-                        
-                        # --- White Paint Rejection Filter ---
-                        _, white_mask = cv2.threshold(crop_gray, 200, 255, cv2.THRESH_BINARY)
-                        if (cv2.countNonZero(white_mask) / float(white_mask.size)) > 0.25:
-                            continue # Discard detection: it's road paint/glare, not a pothole
-
-                        dark_thresh = cv2.adaptiveThreshold(crop_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 15)
-                        hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
-                        _, bright_mask = cv2.threshold(hsv[:,:,2], 140, 255, cv2.THRESH_BINARY)
-                        _, low_sat_mask = cv2.threshold(hsv[:,:,1], 70, 255, cv2.THRESH_BINARY_INV)
-                        water_mask = cv2.bitwise_and(bright_mask, low_sat_mask)
-                        
-                        blurred = cv2.GaussianBlur(crop_gray, (5, 5), 0)
-                        sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
-                        sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
-                        gradient_mag = np.sqrt(sobelx**2 + sobely**2)
-                        max_val = gradient_mag.max()
-                        edge_thresh = np.uint8(gradient_mag / max_val * 255) if max_val > 0 else np.zeros_like(crop_gray)
-                        _, edge_thresh = cv2.threshold(edge_thresh, 50, 255, cv2.THRESH_BINARY)
-
-                        roi_f = crop_gray.astype(np.float32)
-                        mean = cv2.blur(roi_f, (15, 15))
-                        mean_sq = cv2.blur(roi_f**2, (15, 15))
-                        variance = mean_sq - mean**2
-                        max_var = variance.max()
-                        variance = np.uint8(variance / max_var * 255) if max_var > 0 else np.zeros_like(crop_gray)
-                        _, texture_mask = cv2.threshold(variance, 80, 255, cv2.THRESH_BINARY_INV)
-
-                        water_pothole_candidate = cv2.bitwise_and(water_mask, texture_mask)
-                        water_pothole_candidate = cv2.bitwise_and(water_pothole_candidate, edge_thresh)
-                        combined_mask = cv2.bitwise_or(dark_thresh, water_pothole_candidate)
-                        
-                        water_percentage = np.sum(water_mask > 0) / (w * h)
-                        is_water_filled = bool(water_percentage > 0.45)
+                        is_water_filled, is_road_paint = self._check_water_fill(
+                            crop_bgr, crop_gray, int(w), int(h)
+                        )
+                        if is_road_paint:
+                            continue
 
                 obj_std_h = self.standards.get(label, self.standards['car'])['height']
                 dist_m    = (obj_std_h * 700) / (h + 1)
@@ -870,40 +904,11 @@ class HazardDetector:
                     crop_bgr = frame[y1:y2, x1:x2]
                     if crop_bgr.size > 0:
                         crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-                        
-                        # --- White Paint Rejection Filter ---
-                        _, white_mask = cv2.threshold(crop_gray, 200, 255, cv2.THRESH_BINARY)
-                        if (cv2.countNonZero(white_mask) / float(white_mask.size)) > 0.25:
-                            continue # Discard detection: it's road paint/glare, not a pothole
-
-                        dark_thresh = cv2.adaptiveThreshold(crop_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 15)
-                        hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
-                        _, bright_mask = cv2.threshold(hsv[:,:,2], 140, 255, cv2.THRESH_BINARY)
-                        _, low_sat_mask = cv2.threshold(hsv[:,:,1], 70, 255, cv2.THRESH_BINARY_INV)
-                        water_mask = cv2.bitwise_and(bright_mask, low_sat_mask)
-                        
-                        blurred = cv2.GaussianBlur(crop_gray, (5, 5), 0)
-                        sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
-                        sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
-                        gradient_mag = np.sqrt(sobelx**2 + sobely**2)
-                        max_val = gradient_mag.max()
-                        edge_thresh = np.uint8(gradient_mag / max_val * 255) if max_val > 0 else np.zeros_like(crop_gray)
-                        _, edge_thresh = cv2.threshold(edge_thresh, 50, 255, cv2.THRESH_BINARY)
-
-                        roi_f = crop_gray.astype(np.float32)
-                        mean = cv2.blur(roi_f, (15, 15))
-                        mean_sq = cv2.blur(roi_f**2, (15, 15))
-                        variance = mean_sq - mean**2
-                        max_var = variance.max()
-                        variance = np.uint8(variance / max_var * 255) if max_var > 0 else np.zeros_like(crop_gray)
-                        _, texture_mask = cv2.threshold(variance, 80, 255, cv2.THRESH_BINARY_INV)
-
-                        water_pothole_candidate = cv2.bitwise_and(water_mask, texture_mask)
-                        water_pothole_candidate = cv2.bitwise_and(water_pothole_candidate, edge_thresh)
-                        combined_mask = cv2.bitwise_or(dark_thresh, water_pothole_candidate)
-                        
-                        water_percentage = np.sum(water_mask > 0) / (w * h)
-                        is_water_filled = bool(water_percentage > 0.45)
+                        is_water_filled, is_road_paint = self._check_water_fill(
+                            crop_bgr, crop_gray, int(w), int(h)
+                        )
+                        if is_road_paint:
+                            continue
 
                 obj_std_h = self.standards.get(label, self.standards['car'])['height']
                 dist_m    = (obj_std_h * 700) / (h + 1)
@@ -939,14 +944,8 @@ class HazardDetector:
         lane_w = orig_w / 3.0
         frame_area = orig_w * orig_h
 
-        # Attempt to get speed from session state if available, else default to 15m/s (54km/h)
-        speed_m_s = 15.0
-        try:
-            import streamlit as st
-            if 'simulated_speed' in st.session_state and st.session_state.simulated_speed > 0:
-                speed_m_s = st.session_state.simulated_speed / 3.6
-        except Exception:
-            pass
+        # Use caller-supplied speed (km/h); default 54 km/h if none provided
+        speed_m_s = speed_kmh / 3.6 if speed_kmh > 0 else 15.0
 
         # Update object tracks for Smart Mute / Traffic Mode logic
         current_tracks = {}
@@ -963,11 +962,7 @@ class HazardDetector:
                 tbox = tdata['box']
                 if tdata['label'] != label: continue
                 
-                xA = max(box[0], tbox[0]); yA = max(box[1], tbox[1])
-                xB = min(box[2], tbox[2]); yB = min(box[3], tbox[3])
-                interArea = max(0, xB-xA) * max(0, yB-yA)
-                tbox_area = (tbox[2]-tbox[0]) * (tbox[3]-tbox[1])
-                iou = interArea / float(box_area + tbox_area - interArea) if (box_area + tbox_area - interArea) > 0 else 0
+                iou = self._compute_iou(box, tbox)
                 
                 if iou > 0.45 and iou > max_iou:
                     matched_id = tid
@@ -1105,13 +1100,7 @@ class HazardDetector:
             for j in range(i + 1, len(vehicles)):
                 v1, v2 = vehicles[i], vehicles[j]
                 b1, b2 = v1['box'], v2['box']
-                xA = max(b1[0], b2[0]); yA = max(b1[1], b2[1])
-                xB = min(b1[2], b2[2]); yB = min(b1[3], b2[3])
-                interArea = max(0, xB-xA) * max(0, yB-yA)
-                v1_area   = (b1[2]-b1[0]) * (b1[3]-b1[1])
-                v2_area   = (b2[2]-b2[0]) * (b2[3]-b2[1])
-                denom     = float(v1_area + v2_area - interArea)
-                iou       = interArea / denom if denom > 0 else 0
+                iou = self._compute_iou(b1, b2)
                 if iou > 0.45 and v1['distance_index'] > 5:
                     return True
         return False
