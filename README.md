@@ -190,4 +190,4 @@ These are excluded from the repo (see `.gitignore`):
 
 ---
 
-*Rakshak AI · B.Tech CSE Final Year Project · 2025–2026*
+*Rakshak AI · B.Sc.IT Final Year Project · 2025–2026*
