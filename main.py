@@ -540,19 +540,27 @@ with h2:
     </div>""", unsafe_allow_html=True)
 
 # ─── HUD ROW ─────────────────────────────────────────────────────────────────
-s = st.session_state.session_stats
-fps_v, lat_v = st.session_state.current_fps, st.session_state.current_latency
-
 c1, c2, c3 = st.columns(3)
 with c1:
-    stat_msg = "🟢 SYSTEMS OPTIMAL" if fps_v > 0 else "⚫ STANDBY"
-    if s['critical_count'] > 0: stat_msg = "🔴 HAZARD DETECTED"
-    elif s['warning_count'] > 0: stat_msg = "🟡 CAUTION"
-    st.metric("System Status", stat_msg, f"{s['frames_processed']} frames")
+    hud_status_ph = st.empty()
 with c2:
-    st.metric("Current Weather", st.session_state.weather_status, "Visibility OK")
+    hud_weather_ph = st.empty()
 with c3:
-    st.metric("Processing Engine", "FPS: " + str(fps_v if fps_v else '—'), f"{lat_v if lat_v else '—'} ms latency", delta_color="inverse")
+    hud_engine_ph = st.empty()
+
+def _render_hud():
+    """Write live values into the three HUD placeholders. Safe to call any time."""
+    s   = st.session_state.session_stats
+    fps_v = st.session_state.current_fps
+    lat_v = st.session_state.current_latency
+    stat_msg = "🟢 SYSTEMS OPTIMAL" if fps_v > 0 else "⚫ STANDBY"
+    if s['critical_count'] > 0:  stat_msg = "🔴 HAZARD DETECTED"
+    elif s['warning_count'] > 0: stat_msg = "🟡 CAUTION"
+    hud_status_ph.metric("System Status",      stat_msg,                             f"{s['frames_processed']} frames")
+    hud_weather_ph.metric("Current Weather",   st.session_state.weather_status,      "Visibility OK")
+    hud_engine_ph.metric("Processing Engine",  "FPS: " + str(fps_v if fps_v else '—'), f"{lat_v if lat_v else '—'} ms latency", delta_color="inverse")
+
+_render_hud()  # initial render (standby values)
 
 # ─── MAIN TABS ────────────────────────────────────────────────────────────────
 
@@ -664,6 +672,7 @@ with tab1:
                             fps_ph.metric("FPS", fps_now)
                             lat_ph.metric("ms",  lat_now)
                             log_ph.markdown(render_log_html(st.session_state.alert_log), unsafe_allow_html=True)
+                            _render_hud()
                             
                         if show_debug_mask and dbg is not None:
                             debug_ph.image(dbg, caption="CV Mask", channels="GRAY", use_container_width=True)
@@ -769,6 +778,7 @@ with tab1:
                             fps_ph.metric("FPS", fps_now)
                             lat_ph.metric("ms",  lat_now)
                             log_ph.markdown(render_log_html(st.session_state.alert_log), unsafe_allow_html=True)
+                            _render_hud()
                             
                         if show_debug_mask and dbg is not None:
                             debug_ph.image(dbg, caption="CV Mask", channels="GRAY", use_container_width=True)
@@ -784,10 +794,11 @@ with tab1:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab2:
     a1,a2,a3,a4 = st.columns(4)
-    a1.metric("Total Detections", s['total_detections'])
-    a2.metric("Critical Alerts",  s['critical_count'])
-    a3.metric("Warnings",         s['warning_count'])
-    a4.metric("Frames Processed", s['frames_processed'])
+    _ss = st.session_state.session_stats          # always live
+    a1.metric("Total Detections", _ss['total_detections'])
+    a2.metric("Critical Alerts",  _ss['critical_count'])
+    a3.metric("Warnings",         _ss['warning_count'])
+    a4.metric("Frames Processed", _ss['frames_processed'])
 
     st.markdown("---")
     left, right = st.columns(2)
