@@ -33,15 +33,28 @@ ENV/
 # Streamlit Secrets
 .streamlit/secrets.toml
 
-# YOLO / ML
+# YOLO / ML models  (large binaries — place locally, do NOT commit)
 yolov8n.pt
+yolov8m.pt
+yolov8s.pt
 runs/
 models/*.pt
 !models/potholes.pt
+models/*.onnx
+models/rakshak_openvino/
 
 # Project Specific
 temp_video.mp4
+*.mp4
+*.avi
+*.mov
 
 # System
 .DS_Store
 Thumbs.db
+
+# Static assets — fonts ARE tracked (small, required for offline UI)
+# static/fonts/*.woff2  <-- intentionally NOT ignored
+
+# Helper scripts output
+static/fonts/offline_fonts.css

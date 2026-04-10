@@ -8,9 +8,82 @@ import os
 import threading   # non-blocking audio alerts
 import pandas as pd
 import random
-import requests
+# requests removed — not used; keeping base64 for font embedding
 import base64
 import json
+
+# ── DISABLE ALL TELEMETRY (fully offline) ───────────────────────────────────────────────────
+print = print  # keep print available below
+try:
+    from ultralytics.utils import SETTINGS
+    if SETTINGS.get('sync', True):       # disable upload of model metrics
+        SETTINGS.update({'sync': False})
+except Exception:
+    pass
+import os; os.environ.setdefault('STREAMLIT_BROWSER_GATHER_USAGE_STATS', '0')
+os.environ.setdefault('YOLO_TELEMETRY', '0')
+
+
+# ── OFFLINE FONT LOADER ───────────────────────────────────────────────────────────────
+def _offline_font_css() -> str:
+    """Return @font-face CSS with fonts embedded as base64 data URIs.
+    Falls back to empty string if font files are missing (graceful degradation)."""
+    _FONTS_DIR = os.path.join(os.path.dirname(__file__), 'static', 'fonts')
+    def _b64(name: str) -> str:
+        path = os.path.join(_FONTS_DIR, name)
+        if not os.path.exists(path):
+            return ''
+        with open(path, 'rb') as f:
+            return base64.b64encode(f.read()).decode()
+
+    orbitron = _b64('Orbitron.woff2')
+    inter300  = _b64('Inter-300.woff2')
+    inter400  = _b64('Inter-400.woff2')
+    inter500  = _b64('Inter-500.woff2')
+    inter600  = _b64('Inter-600.woff2')
+
+    if not orbitron:   # font files not present — skip, UI still works
+        return ''
+
+    return f"""
+@font-face {{
+  font-family: 'Orbitron';
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url('data:font/woff2;base64,{orbitron}') format('woff2');
+}}
+@font-face {{
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('data:font/woff2;base64,{inter300}') format('woff2');
+}}
+@font-face {{
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('data:font/woff2;base64,{inter400}') format('woff2');
+}}
+@font-face {{
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('data:font/woff2;base64,{inter500}') format('woff2');
+}}
+@font-face {{
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('data:font/woff2;base64,{inter600}') format('woff2');
+}}
+"""
+
+_FONT_CSS = _offline_font_css()   # evaluate once at startup
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -21,9 +94,10 @@ st.set_page_config(
 )
 
 # ── GLOBAL CSS (Glassmorphism & Cyberpunk HUD) ──────────────────────────────
-st.markdown("""
+_CSS_BODY = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Inter:wght@300;400;500;600&display=swap');
+"""
+st.markdown(_CSS_BODY + _FONT_CSS + """
 
 /* Base Theme */
 html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {

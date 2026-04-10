@@ -190,4 +190,8 @@ These are excluded from the repo (see `.gitignore`):
 
 ---
 
+<<<<<<< Updated upstream
 *Rakshak AI · B.Sc.IT Final Year Project · 2025–2026*
+=======
+*Rakshak AI · B.Sc.IT Data Science Final Year Project · 2025–2026*
+>>>>>>> Stashed changes

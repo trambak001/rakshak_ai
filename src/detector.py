@@ -201,8 +201,20 @@ class HazardDetector:
             self._load_pytorch(NANO_MODEL_PATH)
             print("✅ Using YOLOv8m (Medium) — optimized for Intel CPU")
         else:
-            self._load_pytorch('yolov8m.pt')
-            print("⚡ Downloading YOLOv8m (Medium) — CPU-only, no GPU required")
+            # ── OFFLINE GUARD ─────────────────────────────────────────────────
+            # No model found locally. Attempting to download yolov8m.pt would
+            # require internet access — which breaks offline mode.
+            # Raise a clear error so the user knows what file to place where.
+            raise FileNotFoundError(
+                "\n\n🚫 Rakshak AI — No model found (offline mode).\n"
+                "   Expected one of:\n"
+                f"     • {OPENVINO_MODEL_XML}  ← fastest (Intel CPU)\n"
+                f"     • {PYTORCH_MODEL_PATH}  ← custom trained\n"
+                f"     • {NANO_MODEL_PATH}      ← stock YOLOv8m\n\n"
+                "   To fix: copy a .pt or OpenVINO model into the correct folder\n"
+                "   and restart.  Download yolov8m.pt from:\n"
+                "   https://github.com/ultralytics/assets/releases\n"
+            )
 
     def _load_openvino_native(self, model_xml_path):
         """
